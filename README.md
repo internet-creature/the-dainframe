@@ -50,7 +50,11 @@ dainframe = { path = "../the-dainframe", develop = true }
 
 ## development
 
+the provider sdks are optional extras (`dainframe[anthropic]`,
+`dainframe[openai]`) — the core carries no sdk dependency. for development,
+install everything:
+
 ```bash
-poetry install
+poetry install --all-extras
 poetry run pytest
 ```

@@ -1,4 +1,11 @@
-from dainframe.tools.context import acting_as, current_actor
+from dainframe.tools.context import ToolContext, current_tool_context, tool_context
 from dainframe.tools.registry import Tool, ToolHandler, ToolRegistry
 
-__all__ = ["Tool", "ToolHandler", "ToolRegistry", "acting_as", "current_actor"]
+__all__ = [
+    "Tool",
+    "ToolContext",
+    "ToolHandler",
+    "ToolRegistry",
+    "current_tool_context",
+    "tool_context",
+]

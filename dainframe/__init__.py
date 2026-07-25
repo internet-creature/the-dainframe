@@ -1,13 +1,15 @@
 """the dainframe: a stimulus-driven multi-agent orchestration framework.
 
-phase 1 exports: provider vocabulary, tool registry, and the agent loop.
-provider implementations (AnthropicProvider, OpenAIProvider) are imported
-from their own modules so their sdks load only when actually used:
+phase 1 exports: provider vocabulary, tool registry + context, and the agent
+loop. provider implementations (AnthropicProvider, OpenAIProvider) are
+optional extras imported from their own modules so their sdks load only when
+actually installed and used:
 
     from dainframe.providers.anthropic import AnthropicProvider
 """
 
 from dainframe.providers.base import BaseAIProvider
+from dainframe.providers.limits import ConcurrencyLimiter
 from dainframe.providers.types import (
     AIRequest,
     AIResponse,
@@ -22,30 +24,47 @@ from dainframe.providers.types import (
     Usage,
 )
 from dainframe.tools.registry import Tool, ToolRegistry
-from dainframe.tools.context import acting_as, current_actor
-from dainframe.loop.agent_loop import AgentLoop, AgentResult, ExecutedAction
-from dainframe.loop.usage import NullUsageSink, UsageSink
+from dainframe.tools.context import ToolContext, current_tool_context, tool_context
+from dainframe.loop.agent_loop import (
+    AgentExecutionError,
+    AgentLoop,
+    AgentResult,
+    ExecutedAction,
+)
+from dainframe.loop.usage import (
+    AgentRunTrace,
+    NullUsageSink,
+    ProviderCallUsage,
+    UsageEvent,
+    UsageSink,
+)
 
 __all__ = [
     "AIRequest",
     "AIResponse",
+    "AgentExecutionError",
     "AgentLoop",
     "AgentResult",
+    "AgentRunTrace",
     "BaseAIProvider",
     "ChatTurn",
+    "ConcurrencyLimiter",
     "ExecutedAction",
     "NullUsageSink",
+    "ProviderCallUsage",
     "ProviderError",
     "ProviderRateLimited",
     "ProviderUnavailable",
     "SystemBlock",
     "Tool",
     "ToolCall",
+    "ToolContext",
     "ToolDef",
     "ToolRegistry",
     "ToolResult",
     "Usage",
+    "UsageEvent",
     "UsageSink",
-    "acting_as",
-    "current_actor",
+    "current_tool_context",
+    "tool_context",
 ]

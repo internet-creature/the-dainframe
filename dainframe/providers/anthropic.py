@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from typing import Optional
 
@@ -6,6 +5,7 @@ import anthropic
 from anthropic import AsyncAnthropic
 
 from .base import BaseAIProvider
+from .limits import ConcurrencyLimiter
 from .types import (
     AIRequest,
     AIResponse,
@@ -33,7 +33,7 @@ class AnthropicProvider(BaseAIProvider):
         model: str,
         api_key: Optional[str] = None,
         thinking: bool = True,
-        max_concurrent: int = 6,
+        limiter: Optional[ConcurrencyLimiter] = None,
     ):
         self.model = model
         # api_key=None falls back to the sdk's ANTHROPIC_API_KEY env lookup
@@ -43,9 +43,9 @@ class AnthropicProvider(BaseAIProvider):
         # with a 400, so callers on that tier construct the provider with
         # thinking=False, and effort is only sent when the request supplies it.
         self._thinking = thinking
-        # shared ceiling on concurrent in-flight calls; invisible at one user,
-        # a guardrail against burst fan-out from ambient activations at scale.
-        self._semaphore = asyncio.Semaphore(max_concurrent)
+        # inject ONE limiter across providers that should share the in-flight
+        # ceiling; a provider constructed without one gets a private default.
+        self.limiter = limiter or ConcurrencyLimiter()
 
     def _build_kwargs(self, request: AIRequest) -> dict:
         kwargs = {
@@ -66,7 +66,7 @@ class AnthropicProvider(BaseAIProvider):
         kwargs = self._build_kwargs(request)
 
         try:
-            async with self._semaphore:
+            async with self.limiter:
                 response = await self.client.messages.create(**kwargs)
         except anthropic.RateLimitError as e:
             raise ProviderRateLimited(str(e)) from e

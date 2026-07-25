@@ -1,23 +1,24 @@
 """tool registry: the plug-in surface for agent capabilities.
 
 each tool pairs a ToolDef (what the model sees) with an async handler (what
-runs). handlers receive `stream_id` injected by the loop - the model never
-sees or chooses whose stream it is acting on, which matters the moment there's
-more than one user/session. new capabilities register here with zero changes
-to the agent loop.
+runs). handlers receive a ToolContext injected by the loop - the model never
+sees or chooses whose stream it acts on or which actor it is, which matters
+the moment there's more than one user/session/agent. new capabilities register
+here with zero changes to the agent loop.
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Iterable
+from typing import Awaitable, Callable, Iterable, Mapping
 
 from dainframe.providers.types import ToolCall, ToolDef, ToolResult
+from dainframe.tools.context import ToolContext
 
 logger = logging.getLogger(__name__)
 
-# handler(tool_input, stream_id) -> human/model-readable result string
-ToolHandler = Callable[[dict, str], Awaitable[str]]
+# handler(tool_input, context) -> human/model-readable result string
+ToolHandler = Callable[[Mapping[str, object], ToolContext], Awaitable[str]]
 
 
 @dataclass
@@ -34,7 +35,9 @@ class Tool:
     # can see across turns what it already did? mutations should record (they're
     # the cross-turn dedup fix); pure reads shouldn't (their results go stale
     # immediately and would permanently occupy cache-stable history bytes).
-    # default True = over-record: the safe direction for new tools.
+    # default True = over-record: the safe direction for new tools. the loop
+    # copies this onto each ExecutedAction, so a recorder never needs to
+    # consult the registry that ran the tool.
     record_event: bool = True
 
 
@@ -71,7 +74,7 @@ class ToolRegistry:
         tool = self._tools.get(name)
         return tool.record_event if tool else True
 
-    async def execute(self, call: ToolCall, stream_id: str) -> ToolResult:
+    async def execute(self, call: ToolCall, context: ToolContext) -> ToolResult:
         """run a tool call. errors are returned to the model (is_error=True)
         rather than raised - graceful recovery is part of the UX."""
         tool = self._tools.get(call.name)
@@ -83,7 +86,7 @@ class ToolRegistry:
                 is_error=True,
             )
         try:
-            result = await tool.handler(call.input, stream_id)
+            result = await tool.handler(call.input, context)
             return ToolResult(tool_call_id=call.id, content=result)
         except Exception as e:
             logger.error("tool '%s' failed: %s", call.name, e)

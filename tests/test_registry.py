@@ -1,19 +1,22 @@
-"""tool registry + acting-context tests: the view() wiring-time guard, the
-record/terminal policy defaults, and contextvar propagation into gathered
-parallel tool calls."""
+"""tool registry + ToolContext tests: the view() wiring-time guard, the
+record/terminal policy defaults, mandatory identity (no silent default), and
+contextvar propagation into gathered parallel tool calls."""
 
 import asyncio
 
 import pytest
 
-from dainframe.tools.context import acting_as, current_actor
+from dainframe.tools.context import ToolContext, current_tool_context, tool_context
 from dainframe.tools.registry import Tool, ToolRegistry
 from dainframe.providers.types import ToolCall, ToolDef
 
 
+CTX = ToolContext(stream_id="s1", activation_id="act-1", actor="aria")
+
+
 def _tool(name, *, terminal=False, record_event=True):
-    async def _handler(tool_input, stream_id):
-        return f"{name} ran for {stream_id} as {current_actor()}"
+    async def _handler(tool_input, context):
+        return f"{name} ran for {context.stream_id} as {context.actor}"
 
     return Tool(
         definition=ToolDef(name=name, description=name, input_schema={"type": "object"}),
@@ -53,7 +56,7 @@ def test_policy_defaults_are_the_safe_direction():
 def test_execute_returns_errors_instead_of_raising():
     reg = ToolRegistry()
 
-    async def _boom(tool_input, stream_id):
+    async def _boom(tool_input, context):
         raise RuntimeError("kaput")
 
     reg.register(
@@ -63,31 +66,58 @@ def test_execute_returns_errors_instead_of_raising():
         )
     )
 
-    result = asyncio.run(reg.execute(ToolCall(id="t1", name="boom", input={}), "s1"))
+    result = asyncio.run(reg.execute(ToolCall(id="t1", name="boom", input={}), CTX))
     assert result.is_error is True
     assert "kaput" in result.content
 
-    unknown = asyncio.run(reg.execute(ToolCall(id="t2", name="ghost", input={}), "s1"))
+    unknown = asyncio.run(reg.execute(ToolCall(id="t2", name="ghost", input={}), CTX))
     assert unknown.is_error is True
 
 
-def test_acting_context_reaches_parallel_tool_calls():
-    """asyncio.gather copies the current context into each task, so parallel
-    calls in one turn all see the actor bound before the gather."""
+def test_handlers_receive_the_full_context():
     reg = ToolRegistry()
     reg.register(_tool("x"))
+    result = asyncio.run(reg.execute(ToolCall(id="1", name="x", input={}), CTX))
+    assert result.content == "x ran for s1 as aria"
+
+
+def test_context_is_mandatory_never_defaulted():
+    """there is no silent identity (DESIGN.md §11.5): reading the context
+    outside a bound tool loop is an error, not 'agent' or 'chordial'."""
+    with pytest.raises(LookupError):
+        current_tool_context()
+
+
+def test_bound_context_reaches_parallel_tool_calls_via_contextvar():
+    """asyncio.gather copies the current context into each task, so parallel
+    calls in one turn all see the ToolContext bound before the gather."""
+    reg = ToolRegistry()
+
+    async def _peek(tool_input, context):
+        # a handler may also read the ambient context instead of the argument
+        ambient = current_tool_context()
+        assert ambient is context
+        return f"seen: {ambient.activation_id}/{ambient.actor}"
+
+    reg.register(
+        Tool(
+            definition=ToolDef(name="peek", description="d", input_schema={}),
+            handler=_peek,
+        )
+    )
 
     async def _go():
-        with acting_as("aria"):
+        with tool_context(CTX):
             return await asyncio.gather(
-                reg.execute(ToolCall(id="1", name="x", input={}), "s1"),
-                reg.execute(ToolCall(id="2", name="x", input={}), "s1"),
+                reg.execute(ToolCall(id="1", name="peek", input={}), CTX),
+                reg.execute(ToolCall(id="2", name="peek", input={}), CTX),
             )
 
     results = asyncio.run(_go())
     assert [r.content for r in results] == [
-        "x ran for s1 as aria",
-        "x ran for s1 as aria",
+        "seen: act-1/aria",
+        "seen: act-1/aria",
     ]
-    # the context manager resets cleanly
-    assert current_actor() == "agent"
+    # the context manager resets cleanly: outside, identity is absent again
+    with pytest.raises(LookupError):
+        current_tool_context()

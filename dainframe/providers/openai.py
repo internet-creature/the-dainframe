@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 from typing import Optional
@@ -6,6 +5,7 @@ from typing import Optional
 from openai import AsyncOpenAI, RateLimitError, AuthenticationError, APIError
 
 from .base import BaseAIProvider
+from .limits import ConcurrencyLimiter
 from .types import (
     AIRequest,
     AIResponse,
@@ -30,12 +30,14 @@ class OpenAIProvider(BaseAIProvider):
         self,
         model: str,
         api_key: Optional[str] = None,
-        max_concurrent: int = 6,
+        limiter: Optional[ConcurrencyLimiter] = None,
     ):
         self.model = model
         # api_key=None falls back to the sdk's OPENAI_API_KEY env lookup
         self.client = AsyncOpenAI(api_key=api_key)
-        self._semaphore = asyncio.Semaphore(max_concurrent)
+        # inject ONE limiter across providers that should share the in-flight
+        # ceiling; a provider constructed without one gets a private default.
+        self.limiter = limiter or ConcurrencyLimiter()
 
     async def create_message(self, request: AIRequest) -> AIResponse:
         kwargs = {
@@ -48,7 +50,7 @@ class OpenAIProvider(BaseAIProvider):
             kwargs["tools"] = self._render_tools(request.tools)
 
         try:
-            async with self._semaphore:
+            async with self.limiter:
                 response = await self.client.responses.create(**kwargs)
         except RateLimitError as e:
             # 429 is most commonly out of quota/funds, not true rate limiting
