@@ -6,7 +6,7 @@ a stimulus-driven multi-agent orchestration framework with an ambient pulse.
 > → each speaker gets a **Briefing** → the **Agent** acts (maybe with tools,
 > maybe silently) → the engine **records** what happened into a shared,
 > visibility-scoped **event log** → confirmed output goes back as a
-> **Deliverable**.
+> per-line result inside an **ActivationResult**.
 >
 > and: time passes (**the Pulse**) → abstract **Rhythms** come due → cheap
 > **Gates** decide whether firing is welcome → a due rhythm becomes an
@@ -26,11 +26,13 @@ seams, the pulse, and the migration plan — lives in
 
 **pre-v0.1, extraction in progress.** phases (see the design doc, §9):
 
-- [ ] phase 1 — providers, tool registry, agent loop
-- [ ] phase 2 — core vocabulary (Stimulus, Event, EventStore, Agent)
-- [ ] phase 3 — the engine (Orchestrator, Director, hooks)
-- [ ] phase 4 — the pulse (rhythms, gates, ambient loop)
-- [ ] phase 5 — chordial fully migrated, `v0.1.0` tagged
+- [ ] phase 0 — freeze contracts + Chordial/interview API spikes
+- [ ] phase 1 — providers, generic tool context, agent loop
+- [ ] phase 2 — vocabulary + EventStore/DeliveryLedger contracts
+- [ ] phase 3 — engine, per-line policy, stream coordination
+- [ ] phase 4 — real second-consumer pressure test
+- [ ] phase 5 — pulse rhythms, claims, gates, ambient loop
+- [ ] phase 6 — Chordial + consumer proof, `v0.1.0` tagged
 
 expect honest breakage until a second consumer exists — finding where the API
 is too chordial-shaped is the whole reason this repo exists this early.
