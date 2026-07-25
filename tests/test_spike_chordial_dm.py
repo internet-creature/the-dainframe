@@ -62,6 +62,9 @@ class DmDirector:
     everything else."""
 
     async def direct(self, stimulus, events):
+        # the engine hands directors a read-only projection (§4.1): only the
+        # engine records
+        assert not hasattr(events, "append")
         speaker = stimulus.addressed[0] if stimulus.addressed else "chordial"
         return Script(lines=(ScriptLine(speaker=speaker),))
 

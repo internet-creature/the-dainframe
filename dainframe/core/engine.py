@@ -39,7 +39,13 @@ from dainframe.core.delivery import (
     NewPendingDelivery,
 )
 from dainframe.core.director import Director
-from dainframe.core.events import Event, EventQuery, EventStore, NewEvent
+from dainframe.core.events import (
+    Event,
+    EventQuery,
+    EventStore,
+    NewEvent,
+    ReadOnlyEventReader,
+)
 from dainframe.core.hooks import NullTurnHooks, TurnHooks
 from dainframe.core.types import (
     ActivationResult,
@@ -94,11 +100,14 @@ class Orchestrator:
         activation_id = f"act-{uuid.uuid4().hex[:12]}"
         async with self.coordinator.hold(stimulus.stream_id):
             store = self.store_factory(stimulus.stream_id)
+            # directors and preconditions get the read-only projection (§4.1):
+            # only the engine records
+            reader = ReadOnlyEventReader(store)
 
             # stale ambient work cancels before recording, direction, or
             # generation - under the lock, so the check can't race a reply
             if stimulus.precondition is not None:
-                if not await stimulus.precondition.holds(store):
+                if not await stimulus.precondition.holds(reader):
                     return ActivationResult(
                         activation_id=activation_id,
                         stream_id=stimulus.stream_id,
@@ -133,7 +142,7 @@ class Orchestrator:
                     self.hooks.after_inbound_recorded, stimulus, store, prev_user
                 )
 
-            script = await self.director.direct(stimulus, store)
+            script = await self.director.direct(stimulus, reader)
             if not script.lines:
                 result = ActivationResult(
                     activation_id=activation_id,

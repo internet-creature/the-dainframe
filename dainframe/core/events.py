@@ -89,6 +89,22 @@ class EventStore(Protocol):
     async def latest(self, query: EventQuery) -> Optional[Event]: ...
 
 
+class ReadOnlyEventReader:
+    """the projection the engine hands to directors, gates, deciders, and
+    preconditions (§4.1): read/latest only, structurally incapable of
+    appending. this is what makes 'only the engine records' enforceable
+    instead of merely conventional."""
+
+    def __init__(self, store: EventStore):
+        self._store = store
+
+    async def read(self, query: EventQuery) -> list[Event]:
+        return await self._store.read(query)
+
+    async def latest(self, query: EventQuery) -> Optional[Event]:
+        return await self._store.latest(query)
+
+
 def _visible_to_all(event: Event, viewer: str) -> bool:
     return True
 

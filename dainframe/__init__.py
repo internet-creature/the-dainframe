@@ -1,9 +1,11 @@
 """the dainframe: a stimulus-driven multi-agent orchestration framework.
 
-phase 1 exports: provider vocabulary, tool registry + context, and the agent
-loop. provider implementations (AnthropicProvider, OpenAIProvider) are
-optional extras imported from their own modules so their sdks load only when
-actually installed and used:
+top-level exports cover the leaf layer: provider vocabulary, tool registry +
+context, and the agent loop. the activation contracts (Stimulus, Script,
+Orchestrator, EventStore, ...) live in `dainframe.core`, and the reusable
+conformance suites in `dainframe.testing`. provider implementations
+(AnthropicProvider, OpenAIProvider) are optional extras imported from their
+own modules so their sdks load only when actually installed and used:
 
     from dainframe.providers.anthropic import AnthropicProvider
 """

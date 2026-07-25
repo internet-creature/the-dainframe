@@ -24,6 +24,7 @@ from dainframe.core.events import (
     EventStore,
     InMemoryEventStore,
     NewEvent,
+    ReadOnlyEventReader,
     VisibilityPolicy,
 )
 from dainframe.core.hooks import CompositeTurnHooks, NullTurnHooks, TurnHooks
@@ -74,6 +75,7 @@ __all__ = [
     "NullTurnHooks",
     "Orchestrator",
     "PendingDelivery",
+    "ReadOnlyEventReader",
     "Script",
     "ScriptLine",
     "ScriptValidationError",
