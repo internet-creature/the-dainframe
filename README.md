@@ -26,7 +26,7 @@ seams, the pulse, and the migration plan — lives in
 
 **pre-v0.1, extraction in progress.** phases (see the design doc, §9):
 
-- [ ] phase 0 — freeze contracts + Chordial/interview API spikes
+- [x] phase 0 — freeze contracts + Chordial/interview API spikes
 - [ ] phase 1 — providers, generic tool context, agent loop
 - [ ] phase 2 — vocabulary + EventStore/DeliveryLedger contracts
 - [ ] phase 3 — engine, per-line policy, stream coordination
@@ -50,7 +50,11 @@ dainframe = { path = "../the-dainframe", develop = true }
 
 ## development
 
+the provider sdks are optional extras (`dainframe[anthropic]`,
+`dainframe[openai]`) — the core carries no sdk dependency. for development,
+install everything:
+
 ```bash
-poetry install
+poetry install --all-extras
 poetry run pytest
 ```

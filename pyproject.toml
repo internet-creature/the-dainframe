@@ -1,0 +1,26 @@
+[project]
+name = "dainframe"
+version = "0.0.1"
+description = "a stimulus-driven multi-agent orchestration framework with an ambient pulse"
+authors = [
+    {name = "DainDeer", email = "jalarison@gmail.com"}
+]
+readme = "README.md"
+# matches chordial's declared runtime contract (DESIGN.md §11.13): raising the
+# floor is a deliberate coordinated decision, not an accident of the dev machine
+requires-python = ">=3.10"
+# core/loop/tools carry no provider sdk dependency (DESIGN.md §8);
+# the adapters are extras
+dependencies = []
+
+[project.optional-dependencies]
+anthropic = ["anthropic (>=0.69.0)"]
+openai = ["openai (>=1.86.0,<2.0.0)"]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4.0"
+black = "^25.1.0"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

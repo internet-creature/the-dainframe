@@ -237,9 +237,15 @@ class Deliverer(Protocol):
 
 class DeliveryLedger(Protocol):
     async def stage(self, pending: NewPendingDelivery) -> PendingDelivery: ...
+    async def get(self, pending_id: str) -> PendingDelivery | None: ...
     async def confirm(self, pending_id: str, receipt: DeliveryReceipt,
                       events: EventStore) -> Event: ...
 ```
+
+`get` is a phase-0 discovery: the engine must learn which stream a pending id
+belongs to BEFORE it can hold the right StreamCoordinator lock around
+`confirm` (§5.5). without it, confirmation would either skip the stream lock
+or require the caller to remember the stream out-of-band.
 
 `DeliveryRequest` carries the opaque target, speaker, text, stream and
 activation/line ids; `DeliveryReceipt` is opaque platform evidence of success.
@@ -469,6 +475,11 @@ class PendingDelivery:
     speaker: str
     target: DeliveryTarget
     text: str
+    # phase-0 discovery: the frozen pending must carry the line's effective
+    # EventContext - confirmation otherwise cannot record the message event
+    # with the right scope/audience/outbound message type (§5.2's per-line
+    # EventContext override would be lost exactly where it matters most).
+    event_context: EventContext
 
 @dataclass(frozen=True)
 class LineResult:
