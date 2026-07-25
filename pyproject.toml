@@ -1,0 +1,21 @@
+[project]
+name = "dainframe"
+version = "0.0.1"
+description = "a stimulus-driven multi-agent orchestration framework with an ambient pulse"
+authors = [
+    {name = "DainDeer", email = "jalarison@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "anthropic (>=0.69.0)",
+    "openai (>=1.86.0,<2.0.0)",
+]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4.0"
+black = "^25.1.0"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
