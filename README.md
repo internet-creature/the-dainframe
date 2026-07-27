@@ -27,8 +27,8 @@ seams, the pulse, and the migration plan — lives in
 **pre-v0.1, extraction in progress.** phases (see the design doc, §9):
 
 - [x] phase 0 — freeze contracts + Chordial/interview API spikes
-- [ ] phase 1 — providers, generic tool context, agent loop
-- [ ] phase 2 — vocabulary + EventStore/DeliveryLedger contracts
+- [x] phase 1 — providers, generic tool context, agent loop
+- [x] phase 2 — vocabulary + EventStore/DeliveryLedger contracts
 - [ ] phase 3 — engine, per-line policy, stream coordination
 - [ ] phase 4 — real second-consumer pressure test
 - [ ] phase 5 — pulse rhythms, claims, gates, ambient loop
