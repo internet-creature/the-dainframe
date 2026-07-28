@@ -670,9 +670,13 @@ recency while another rhythm wants last successful outreach.
 
 jitter is sampled once per occurrence and persisted; re-sampling it on every
 poll would move the due time indefinitely. datetimes are timezone-aware UTC at
-the protocol boundary. Calendar implementations specify DST behavior:
-nonexistent local times follow `misfire`; repeated local times fire at most
-once per occurrence key.
+the protocol boundary — but the pulse normalizes defensively (`as_utc`): a
+naive timestamp is treated as UTC rather than corrupting a conversion or
+raising mid-cycle, because the first real adapter (chordial's SQL store)
+already surfaces `datetime.utcnow()` rows. Calendar implementations specify
+DST behavior: nonexistent local times simply never occur (spring-forward);
+the fall-back fold is deduplicated by LOCAL wall clock, so a repeated local
+time fires at most once per local occurrence — not once per UTC instant.
 
 `Dynamic` is chordial's designed-but-never-built "haiku check-in gate"
 (replace the fixed interval with an AI decide-when-to-reach-out call),
@@ -707,10 +711,26 @@ class PulseStore(Protocol):
     async def claim_due(self, key: RhythmKey, now: datetime,
                         lease_until: datetime) -> PulseClaim | None: ...
     async def complete(self, claim: PulseClaim, outcome: PulseOutcome,
-                       next_check: datetime) -> None: ...
+                       next_check: datetime,
+                       occurrence_key: str | None = None) -> None: ...
     async def abandon(self, claim: PulseClaim, *, retry_at: datetime,
                       reason: str) -> None: ...
 ```
+
+two phase-5 discoveries over the original field lists (the phase-0
+doc-follows-code pattern):
+
+- `complete()` takes `occurrence_key`: calendar dedup must persist
+  atomically with the horizon, or a crash between two writes re-fires the
+  same morning brief. the loop passes it **only when the activation
+  genuinely concluded** (`activated`/`cancelled`) — a failed delivery keeps
+  the occurrence open so the retry re-fires *today's* firing instead of
+  silently skipping to tomorrow's.
+- rhythm evaluation's quiet answer can carry an `occurrence_key` too
+  (`Evaluation.occurrence_key`): a fresh Calendar rhythm persists its START
+  BOUNDARY on its first poll — without that, evaluation re-anchors to `now`
+  every cycle and the rhythm never fires — and a misfire-skip persists the
+  consumed backlog.
 
 `FiringPlan` is cheap and contains the rhythm key/kind, candidate actor (when
 known), target/destination eligibility, the Dynamic decider's reason, and the

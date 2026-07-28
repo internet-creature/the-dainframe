@@ -30,8 +30,8 @@ seams, the pulse, and the migration plan — lives in
 - [x] phase 1 — providers, generic tool context, agent loop
 - [x] phase 2 — vocabulary + EventStore/DeliveryLedger contracts
 - [x] phase 3 — engine, per-line policy, stream coordination
-- [ ] phase 4 — real second-consumer pressure test
-- [ ] phase 5 — pulse rhythms, claims, gates, ambient loop
+- [x] phase 4 — real second-consumer pressure test (cadenza)
+- [x] phase 5 — pulse rhythms, claims, gates, ambient loop
 - [ ] phase 6 — Chordial + consumer proof, `v0.1.0` tagged
 
 expect honest breakage until a second consumer exists — finding where the API
