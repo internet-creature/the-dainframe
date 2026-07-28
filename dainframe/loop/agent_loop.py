@@ -10,14 +10,16 @@ must survive whatever happens next. a provider failure AFTER tools have run
 raises AgentExecutionError carrying the partial actions - raising a bare
 ProviderError and losing already-executed mutations is not allowed.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Mapping, Optional
+from typing import TYPE_CHECKING, Mapping, Optional
 
 from dainframe.providers.base import BaseAIProvider
+from dainframe.providers.resolver import HintResolutionError, ProviderResolver
 from dainframe.providers.types import AIRequest, ChatTurn, ProviderError, Usage
 from dainframe.tools.registry import ToolRegistry
 from dainframe.tools.context import ToolContext, tool_context
@@ -27,6 +29,9 @@ from dainframe.loop.usage import (
     ProviderCallUsage,
     UsageSink,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - core imports this module at load time
+    from dainframe.core.types import ExecutionHints
 
 logger = logging.getLogger(__name__)
 
@@ -81,12 +86,17 @@ class AgentLoop:
         provider_name: str,
         usage_sink: Optional[UsageSink] = None,
         max_iterations: int = 5,
+        resolver: Optional["ProviderResolver"] = None,
     ):
         self.provider = provider
         self.registry = registry
         self.provider_name = provider_name
         self.usage = usage_sink or NullUsageSink()
         self.max_iterations = max_iterations
+        # the §4.8 routing seam: when set, ExecutionHints passed to run()
+        # resolve to a (provider, model, effort) for the whole run. the
+        # constructor's provider stays the default route for hint-less runs.
+        self.resolver = resolver
 
     async def run(
         self,
@@ -95,15 +105,66 @@ class AgentLoop:
         context: ToolContext,
         platform: Optional[str] = None,
         turn_kind: str,
+        hints: Optional["ExecutionHints"] = None,
     ) -> AgentResult:
         """`context` is mandatory and activation-scoped: it names the stream,
         the activation, and the actor whose loop this is. it rides in a
         contextvar so tools (e.g. a memory save) attribute the right identity
-        without threading it through every handler."""
+        without threading it through every handler.
+
+        `hints` is the director's per-line ExecutionHints, resolved ONCE for
+        the whole run (§4.8) - provider-native continuation blocks cannot
+        switch provider halfway through. resolution never mutates the loop:
+        one AgentLoop instance is safely shared across concurrent runs."""
+        provider, provider_name = self._route(request, hints, context)
         with tool_context(context):
             return await self._run(
-                request, context=context, platform=platform, turn_kind=turn_kind
+                request,
+                context=context,
+                platform=platform,
+                turn_kind=turn_kind,
+                provider=provider,
+                provider_name=provider_name,
             )
+
+    def _route(
+        self,
+        request: AIRequest,
+        hints: Optional["ExecutionHints"],
+        context: ToolContext,
+    ) -> tuple[BaseAIProvider, str]:
+        """turn hints into this run's fixed (provider, name), applying the
+        validated per-run dials to the request. the honor-or-declare rule
+        (§11.6), enforced:
+
+        - no hints: the constructor's provider, untouched.
+        - hints + resolver: full routing - provider/model/effort validated
+          by the resolver, effort/max_tokens stamped onto the request.
+        - hints without a resolver: effort/max_tokens are honored on the
+          agent's own declared provider (the cheap dials need no routing);
+          a provider/model hint CANNOT be honored and fails before the
+          first model call - never silently ignored.
+        """
+        if hints is None:
+            return self.provider, self.provider_name
+        if self.resolver is not None:
+            resolved = self.resolver.resolve(hints, agent=context.actor)
+            if resolved.effort is not None:
+                request.effort = resolved.effort
+            if resolved.max_tokens is not None:
+                request.max_tokens = resolved.max_tokens
+            return resolved.provider, resolved.provider_name
+        if hints.provider or hints.model:
+            raise HintResolutionError(
+                f"agent '{context.actor}' received a provider/model hint "
+                f"(provider={hints.provider!r}, model={hints.model!r}) but "
+                "its loop has no ProviderResolver configured"
+            )
+        if hints.effort is not None:
+            request.effort = hints.effort
+        if hints.max_tokens is not None:
+            request.max_tokens = hints.max_tokens
+        return self.provider, self.provider_name
 
     async def _run(
         self,
@@ -112,6 +173,8 @@ class AgentLoop:
         context: ToolContext,
         platform: Optional[str],
         turn_kind: str,
+        provider: BaseAIProvider,
+        provider_name: str,
     ) -> AgentResult:
         total = Usage()
         tool_trace: list = []
@@ -131,15 +194,24 @@ class AgentLoop:
         executed: list[ExecutedAction] = []
 
         for i in range(self.max_iterations):
-            response = await self._create_message(request, executed)
+            response = await self._create_message(request, executed, provider)
             total = total + response.usage
-            await self._emit_call(context, platform, turn_kind, response)
+            await self._emit_call(
+                context, platform, turn_kind, response, provider, provider_name
+            )
             stop_reason = response.stop_reason
 
             if response.stop_reason == "refusal":
                 await self._emit_trace(
-                    context, platform, turn_kind, i, False, tool_trace,
-                    0, stop_reason, total,
+                    context,
+                    platform,
+                    turn_kind,
+                    i,
+                    False,
+                    tool_trace,
+                    0,
+                    stop_reason,
+                    total,
                 )
                 return AgentResult(
                     text=None,
@@ -164,12 +236,20 @@ class AgentLoop:
                     logger.warning(
                         "empty max_tokens response (thinking consumed the "
                         "budget) for stream %s - retrying once with max_tokens=%s",
-                        context.stream_id, request.max_tokens,
+                        context.stream_id,
+                        request.max_tokens,
                     )
                     continue
                 await self._emit_trace(
-                    context, platform, turn_kind, i + 1, False, tool_trace,
-                    len(final_text or ""), stop_reason, total,
+                    context,
+                    platform,
+                    turn_kind,
+                    i + 1,
+                    False,
+                    tool_trace,
+                    len(final_text or ""),
+                    stop_reason,
+                    total,
                 )
                 return AgentResult(
                     text=final_text,
@@ -181,10 +261,7 @@ class AgentLoop:
             # append the assistant turn (with its raw blocks) then run tools
             request.messages.append(response.assistant_turn)
             results = await asyncio.gather(
-                *[
-                    self.registry.execute(call, context)
-                    for call in response.tool_calls
-                ]
+                *[self.registry.execute(call, context) for call in response.tool_calls]
             )
             request.messages.append(ChatTurn(role="user", tool_results=list(results)))
 
@@ -219,8 +296,15 @@ class AgentLoop:
             if collected_text and all_terminal:
                 final_text = self._join(collected_text)
                 await self._emit_trace(
-                    context, platform, turn_kind, i + 1, False, tool_trace,
-                    len(final_text or ""), "terminal_tools", total,
+                    context,
+                    platform,
+                    turn_kind,
+                    i + 1,
+                    False,
+                    tool_trace,
+                    len(final_text or ""),
+                    "terminal_tools",
+                    total,
                 )
                 return AgentResult(
                     text=final_text,
@@ -232,36 +316,45 @@ class AgentLoop:
         # iteration cap reached: force a final answer with tools disabled
         logger.warning(
             "agent hit iteration cap (%s) for stream %s",
-            self.max_iterations, context.stream_id,
+            self.max_iterations,
+            context.stream_id,
         )
         request.tools = []
-        final = await self._create_message(request, executed)
+        final = await self._create_message(request, executed, provider)
         total = total + final.usage
-        await self._emit_call(context, platform, turn_kind, final)
-        if (
-            not final.text
-            and final.stop_reason == "max_tokens"
-            and not budget_retried
-        ):
+        await self._emit_call(
+            context, platform, turn_kind, final, provider, provider_name
+        )
+        if not final.text and final.stop_reason == "max_tokens" and not budget_retried:
             # same thinking-ate-the-budget failure on the forced final answer
             budget_retried = True
             request.max_tokens = request.max_tokens * 2
             logger.warning(
                 "empty max_tokens response on forced final answer for stream %s "
                 "- retrying once with max_tokens=%s",
-                context.stream_id, request.max_tokens,
+                context.stream_id,
+                request.max_tokens,
             )
-            final = await self._create_message(request, executed)
+            final = await self._create_message(request, executed, provider)
             total = total + final.usage
-            await self._emit_call(context, platform, turn_kind, final)
+            await self._emit_call(
+                context, platform, turn_kind, final, provider, provider_name
+            )
         stop_reason = final.stop_reason
         refused = final.stop_reason == "refusal"
         if final.text:
             collected_text.append(final.text)
         final_text = self._join(collected_text)
         await self._emit_trace(
-            context, platform, turn_kind, self.max_iterations, True, tool_trace,
-            len(final_text or ""), stop_reason, total,
+            context,
+            platform,
+            turn_kind,
+            self.max_iterations,
+            True,
+            tool_trace,
+            len(final_text or ""),
+            stop_reason,
+            total,
         )
         return AgentResult(
             text=None if refused else final_text,
@@ -272,11 +365,11 @@ class AgentLoop:
             actions=executed,
         )
 
-    async def _create_message(self, request, executed: list):
+    async def _create_message(self, request, executed: list, provider):
         """one provider call, wrapped for action truth: if tools already ran
         this turn, a provider failure must carry their trail out with it."""
         try:
-            return await self.provider.create_message(request)
+            return await provider.create_message(request)
         except AgentExecutionError:
             raise
         except ProviderError as e:
@@ -293,13 +386,15 @@ class AgentLoop:
         cleaned = [p.strip() for p in parts if p and p.strip()]
         return "\n\n".join(cleaned) if cleaned else None
 
-    async def _emit_call(self, context, platform, turn_kind, response) -> None:
+    async def _emit_call(
+        self, context, platform, turn_kind, response, provider, provider_name
+    ) -> None:
         # the model each response actually reported, not the provider default
         await self._emit(
             ProviderCallUsage(
                 stream_id=context.stream_id,
-                provider=self.provider_name,
-                model=response.model or self.provider.model,
+                provider=provider_name,
+                model=response.model or provider.model,
                 turn_kind=turn_kind,
                 usage=response.usage,
                 actor=context.actor,

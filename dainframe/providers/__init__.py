@@ -5,6 +5,12 @@ dainframe.providers.openai) so each sdk is only imported when used.
 """
 
 from dainframe.providers.base import BaseAIProvider
+from dainframe.providers.resolver import (
+    HintResolutionError,
+    ProviderResolver,
+    ProviderTable,
+    ResolvedProvider,
+)
 from dainframe.providers.types import (
     AIRequest,
     AIResponse,
@@ -24,6 +30,10 @@ __all__ = [
     "AIResponse",
     "BaseAIProvider",
     "ChatTurn",
+    "HintResolutionError",
+    "ProviderResolver",
+    "ProviderTable",
+    "ResolvedProvider",
     "ProviderError",
     "ProviderRateLimited",
     "ProviderUnavailable",
