@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import (
     TYPE_CHECKING,
     Awaitable,
@@ -210,6 +210,15 @@ def next_cron_occurrence(cron: str, tz: str, after: datetime) -> datetime:
 # --- evaluation ------------------------------------------------------------
 
 
+def as_utc(dt: datetime) -> datetime:
+    """the protocol boundary is aware-UTC (§6.1), but real adapters exist
+    that surface naive-UTC timestamps (chordial's SQL store stores
+    datetime.utcnow() rows). the pulse normalizes defensively - a naive
+    timestamp is TREATED AS UTC - instead of corrupting a timezone
+    conversion or raising mid-cycle."""
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
 def _with_jitter(due_at: datetime, jitter: Optional[timedelta]) -> datetime:
     if jitter is None:
         return due_at
@@ -221,10 +230,13 @@ async def _interval_anchor(
 ) -> Optional[datetime]:
     if isinstance(interval.anchor, EventQuery):
         latest = await events.latest(interval.anchor)
-        return latest.created_at if latest else None
-    if interval.anchor == "last_delivered":
-        return state.last_delivered
-    return state.last_attempt
+        return as_utc(latest.created_at) if latest else None
+    anchor = (
+        state.last_delivered
+        if interval.anchor == "last_delivered"
+        else state.last_attempt
+    )
+    return as_utc(anchor) if anchor is not None else None
 
 
 async def evaluate(

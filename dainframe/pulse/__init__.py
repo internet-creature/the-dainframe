@@ -1,6 +1,7 @@
 from dainframe.pulse.gates import AllOf, BackoffGate, NoNewerEvent, QuietHoursGate
 from dainframe.pulse.loop import Pulse
 from dainframe.pulse.rhythms import (
+    as_utc,
     Calendar,
     Decider,
     Decision,

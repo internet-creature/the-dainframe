@@ -21,6 +21,7 @@ from typing import Awaitable, Callable, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 from dainframe.core.events import Event, EventQuery, EventReader
+from dainframe.pulse.rhythms import as_utc
 from dainframe.pulse.types import FiringPlan, GateDecision
 
 
@@ -113,9 +114,10 @@ class BackoffGate:
 
         if unanswered:
             required = self.base_interval * (2 ** (len(unanswered) - 1))
-            retry_at = unanswered[-1].created_at + required
-            if now < retry_at:
-                elapsed = now - unanswered[-1].created_at
+            newest = as_utc(unanswered[-1].created_at)
+            retry_at = newest + required
+            if as_utc(now) < retry_at:
+                elapsed = as_utc(now) - newest
                 return GateDecision(
                     False,
                     f"backoff: {required} required, {elapsed} elapsed",
@@ -178,4 +180,4 @@ class NoNewerEvent:
 
     async def holds(self, events: EventReader) -> bool:
         latest = await events.latest(self.query)
-        return latest is None or latest.created_at <= self.than
+        return latest is None or as_utc(latest.created_at) <= as_utc(self.than)
