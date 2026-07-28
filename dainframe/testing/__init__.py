@@ -4,5 +4,6 @@ override its factory method; every test method comes along."""
 
 from dainframe.testing.delivery_ledger_contract import DeliveryLedgerContract
 from dainframe.testing.event_store_contract import EventStoreContract
+from dainframe.testing.pulse_store_contract import PulseStoreContract
 
-__all__ = ["DeliveryLedgerContract", "EventStoreContract"]
+__all__ = ["DeliveryLedgerContract", "EventStoreContract", "PulseStoreContract"]
