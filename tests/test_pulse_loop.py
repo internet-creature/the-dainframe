@@ -17,6 +17,7 @@ from dainframe.core.types import (
     Stimulus,
 )
 from dainframe.pulse import (
+    Calendar,
     FiringPlan,
     GateDecision,
     InMemoryPulseStore,
@@ -128,13 +129,32 @@ def checkin(every=timedelta(hours=1)):
     )
 
 
-def wire(engine_results, *, gates=(), plans=True, dispatcher=None, clock=None):
+def morning_brief(misfire="skip"):
+    async def tz(stream_id):
+        return "UTC"
+
+    return TaggedRhythm(
+        rhythm_id="brief",
+        kind="morning_brief",
+        rhythm=Calendar(cron="0 9 * * *", tz_of=tz, misfire=misfire),
+    )
+
+
+def wire(
+    engine_results,
+    *,
+    gates=(),
+    plans=True,
+    dispatcher=None,
+    clock=None,
+    rhythm=None,
+):
     clock = clock or Clock()
     engine = FakeEngine(engine_results)
     factory = Factory(plans=plans)
     store = InMemoryPulseStore()
     pulse = Pulse(
-        source=Source(("s1", [checkin()])),
+        source=Source(("s1", [rhythm or checkin()])),
         factory=factory,
         engine=engine,
         store=store,
@@ -324,3 +344,106 @@ def test_one_broken_rhythm_does_not_silence_the_rest():
     )
     run(pulse.tick())
     assert len(engine.handled) == 1  # the healthy rhythm still fired
+
+
+# --- calendar rhythms through the loop (review round) -------------------------
+
+
+def test_fresh_calendar_rhythm_fires_at_its_next_occurrence():
+    """the P1 regression: a fresh brief must persist its start boundary on
+    the first quiet poll - re-anchoring to `now` every cycle means the next
+    occurrence recedes forever and the rhythm never fires."""
+    pulse, engine, factory, store, clock = wire(
+        [activation(line("delivered"))], rhythm=morning_brief()
+    )
+    run(pulse.tick())  # noon: nothing owed yet...
+    assert engine.handled == []
+
+    clock.at = datetime(2026, 7, 2, 9, 3, tzinfo=timezone.utc)
+    run(pulse.tick())  # ...but tomorrow's 9am occurrence FIRES
+    assert len(engine.handled) == 1
+
+    run(pulse.tick())  # and only once
+    assert len(engine.handled) == 1
+
+
+def test_failed_calendar_delivery_retries_the_same_occurrence():
+    """a failed send must not consume the occurrence: the retry re-fires
+    TODAY's brief instead of silently skipping to tomorrow's."""
+    failed = activation(
+        line(
+            "errored",
+            error=ExecutionErrorInfo(
+                kind="delivery_failed", message="send failed", retryable=True
+            ),
+        )
+    )
+    pulse, engine, factory, store, clock = wire(
+        [failed, activation(line("delivered"))], rhythm=morning_brief()
+    )
+    run(pulse.tick())  # noon: boundary persisted
+    clock.at = datetime(2026, 7, 2, 9, 2, tzinfo=timezone.utc)
+    run(pulse.tick())
+    assert len(engine.handled) == 1  # fired; delivery failed
+
+    clock.advance(timedelta(minutes=31))  # past delivery_retry, inside grace
+    run(pulse.tick())
+    assert len(engine.handled) == 2  # the SAME occurrence, retried
+
+    clock.advance(timedelta(minutes=10))
+    run(pulse.tick())
+    assert len(engine.handled) == 2  # delivered: now it's consumed
+
+
+def test_partial_pending_delivery_still_advances_last_delivered():
+    """one pending line confirms, the next fails: the firing is failed, but
+    the confirmed send is REAL - the store must remember it, or a
+    rhythm-anchored retry duplicates already-delivered outreach."""
+
+    def pd(i):
+        return PendingDelivery(
+            pending_id=f"pd-{i}",
+            stream_id="s1",
+            activation_id="act",
+            line_id=f"act:{i}",
+            speaker="aria",
+            target=DeliveryTarget(platform="telegram", target_id="t1"),
+            text=f"part {i}",
+            event_context=EventContext(),
+        )
+
+    async def dispatcher(pending):
+        return pending.pending_id == "pd-1"  # first lands, second fails
+
+    pulse, engine, factory, store, clock = wire(
+        [activation(line("pending", pending=pd(1)), line("pending", pending=pd(2)))],
+        dispatcher=dispatcher,
+    )
+    run(pulse.tick())
+    assert engine.confirmed == ["pd-1"]
+
+    clock.advance(timedelta(minutes=31))
+    claim = run(
+        store.claim_due(
+            RhythmKey(stream_id="s1", rhythm_id="checkin"),
+            clock.at,
+            clock.at + timedelta(minutes=5),
+        )
+    )
+    assert claim.state.last_delivered == T0  # the real send survived
+    assert claim.state.last_attempt == T0
+
+
+def test_stop_interrupts_the_sleep_between_cycles():
+    """stop() during the inter-cycle sleep must end run() promptly, not
+    after the full cycle."""
+    pulse, engine, factory, store, clock = wire([])
+    pulse.cycle = timedelta(hours=1)
+
+    async def scenario():
+        task = asyncio.create_task(pulse.run())
+        await asyncio.sleep(0.05)  # one tick, then into the long sleep
+        pulse.stop()
+        await asyncio.wait_for(task, timeout=1.0)
+
+    run(scenario())

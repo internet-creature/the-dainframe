@@ -219,6 +219,8 @@ def test_calendar_misfire_skip_drops_stale_occurrences():
     )
     assert ev.decision is None
     assert ev.next_check == datetime(2026, 7, 4, 9, 0, tzinfo=timezone.utc)
+    # the skipped backlog is consumed, not left to be re-scanned forever
+    assert ev.occurrence_key == "2026-07-03T09:00:00+00:00"
 
 
 def test_calendar_misfire_fire_once_collapses_the_backlog():
@@ -317,3 +319,43 @@ def test_dynamic_never_trusts_a_decider_beyond_the_clamp():
     )
     assert ev_far.next_check == T0 + timedelta(hours=6)
     assert ev_soon.next_check == T0 + timedelta(minutes=5)
+
+
+# --- review round: calendar boundary + DST fold -----------------------------
+
+
+def test_calendar_fresh_key_persists_its_start_boundary():
+    """the quiet first answer must carry the boundary for the loop to
+    persist - without it, evaluation re-anchors to `now` on every poll and
+    a fresh rhythm never fires."""
+    ev = run(
+        evaluate(
+            tagged(Calendar(cron="0 9 * * *", tz_of=_tz_utc)),
+            "s",
+            PulseState(),
+            InMemoryEventStore(),
+            T0,
+        )
+    )
+    assert ev.decision is None
+    assert ev.occurrence_key == T0.isoformat()
+
+
+def test_calendar_fall_back_fires_the_repeated_local_time_once():
+    """new york, nov 1 2026 (dst ends): 01:30 local exists at 05:30Z (EDT)
+    and again at 06:30Z (EST). having fired the first, the fold's second
+    instant is the SAME local occurrence - at most once."""
+    state = PulseState(occurrence_key="2026-11-01T05:30:00+00:00")
+    now = datetime(2026, 11, 1, 6, 35, tzinfo=timezone.utc)
+    ev = run(
+        evaluate(
+            tagged(Calendar(cron="30 1 * * *", tz_of=_tz_ny)),
+            "s",
+            state,
+            InMemoryEventStore(),
+            now,
+        )
+    )
+    assert ev.decision is None
+    # next: tomorrow's 01:30 EST
+    assert ev.next_check == datetime(2026, 11, 2, 6, 30, tzinfo=timezone.utc)

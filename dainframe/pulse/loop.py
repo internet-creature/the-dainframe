@@ -84,17 +84,30 @@ class Pulse:
         self.denial_recheck = denial_recheck
         self.delivery_retry = delivery_retry
         self._running = False
+        self._stopping: Optional[asyncio.Event] = None
 
     # --- lifecycle -----------------------------------------------------------
 
     async def run(self) -> None:
         self._running = True
+        self._stopping = asyncio.Event()
         while self._running:
             await self.tick()
-            await asyncio.sleep(self.cycle.total_seconds())
+            if not self._running:
+                break
+            # sleep until the next cycle - or until stop() interrupts it, so
+            # shutdown is prompt instead of waiting out the full cycle
+            try:
+                await asyncio.wait_for(
+                    self._stopping.wait(), timeout=self.cycle.total_seconds()
+                )
+            except asyncio.TimeoutError:
+                continue
 
     def stop(self) -> None:
         self._running = False
+        if self._stopping is not None:
+            self._stopping.set()
 
     # --- one cycle -----------------------------------------------------------
 
@@ -132,29 +145,35 @@ class Pulse:
                     claim,
                     PulseOutcome(status="skipped", at=now, detail="not due"),
                     next_check=evaluation.next_check,
+                    # calendar bookkeeping a quiet answer may still carry: a
+                    # fresh rhythm's start boundary, or a misfire-skipped
+                    # backlog being consumed
+                    occurrence_key=evaluation.occurrence_key,
                 )
                 return
             decision = evaluation.decision
 
             # 3. plan: resolve WHO and WHERE before spending anything on WHAT
+            # (the occurrence is NOT consumed: nothing happened yet, and a
+            # transient no-plan must not eat a calendar firing)
             plan = await self.factory.plan(stream_id, tagged, decision)
             if plan is None:
                 await self.store.complete(
                     claim,
                     PulseOutcome(status="skipped", at=now, detail="no plan"),
-                    next_check=evaluation.next_after_fire,
-                    occurrence_key=decision.occurrence_key,
+                    next_check=now + self.denial_recheck,
                 )
                 return
 
             # 4. gates: zero-token veto, with a persisted horizon when computable
+            # (occurrence likewise not consumed - the grace window and misfire
+            # policy decide what happens if the denial outlives it)
             verdict = await self.gate.check(plan, events, now)
             if not verdict.allowed:
                 await self.store.complete(
                     claim,
                     PulseOutcome(status="denied", at=now, detail=verdict.reason),
                     next_check=verdict.retry_at or (now + self.denial_recheck),
-                    occurrence_key=decision.occurrence_key,
                 )
                 return
 
@@ -169,13 +188,18 @@ class Pulse:
             )
             raise
 
-        # 6. complete: record what actually happened + the next horizon
+        # 6. complete: record what actually happened + the next horizon. the
+        # occurrence is consumed only when the activation genuinely concluded
+        # (ran, or was cancelled as stale) - a FAILED delivery keeps the
+        # occurrence open so the retry re-fires the same morning brief
+        # instead of silently skipping to tomorrow's
         outcome, next_check = await self._conclude(result, evaluation, now)
+        consumed = outcome.status in ("activated", "cancelled")
         await self.store.complete(
             claim,
             outcome,
             next_check=next_check,
-            occurrence_key=decision.occurrence_key,
+            occurrence_key=decision.occurrence_key if consumed else None,
         )
 
     async def _conclude(self, result, evaluation, now: datetime):
@@ -213,10 +237,14 @@ class Pulse:
                     line.line_id,
                 )
                 return (
+                    # `delivered` survives into the failed outcome: an
+                    # earlier line's confirmed send is real, and losing it
+                    # would let a rhythm-anchored retry duplicate outreach
                     PulseOutcome(
                         status="failed",
                         at=now,
                         generated=True,
+                        delivered=delivered,
                         detail="pending line without a pending_dispatcher",
                     ),
                     now + self.delivery_retry,
@@ -233,6 +261,7 @@ class Pulse:
                         status="failed",
                         at=now,
                         generated=True,
+                        delivered=delivered,
                         detail="platform did not confirm the send",
                     ),
                     now + self.delivery_retry,

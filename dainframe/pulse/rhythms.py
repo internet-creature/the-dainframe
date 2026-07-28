@@ -109,11 +109,16 @@ class TaggedRhythm:
 class Evaluation:
     """the loop's whole per-rhythm answer. `decision` present = due now;
     absent = quiet until `next_check`. `next_after_fire` is the horizon to
-    persist if this firing goes ahead."""
+    persist if this firing goes ahead. `occurrence_key`, when set on a
+    quiet answer, is calendar bookkeeping the loop must persist even
+    though nothing fired: a fresh rhythm's start boundary (without it,
+    evaluation re-anchors to `now` on every poll and the rhythm never
+    fires), or a misfire-skipped backlog being consumed."""
 
     decision: Optional["RhythmDecision"]
     next_check: datetime
     next_after_fire: datetime
+    occurrence_key: Optional[str] = None
 
 
 # --- calendar: a small five-field cron -----------------------------------
@@ -126,8 +131,10 @@ class Evaluation:
 #
 # occurrences are found by scanning UTC minutes and converting each to the
 # stream's local zone, which makes DST behavior fall out naturally:
-# nonexistent local times simply never appear, and repeated local times are
-# deduplicated by occurrence key.
+# nonexistent local times simply never appear (spring-forward), and the
+# fall-back fold - the same LOCAL wall-clock time existing at two UTC
+# instants - is deduplicated by comparing local wall clocks, so a repeated
+# local time fires at most once.
 
 _FIELD_BOUNDS = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
 
@@ -207,6 +214,25 @@ def next_cron_occurrence(cron: str, tz: str, after: datetime) -> datetime:
     raise ValueError(f"cron {cron!r} has no occurrence within a year")
 
 
+def _local_wall(dt: datetime, zone: ZoneInfo) -> str:
+    """the local wall-clock reading of an instant, offset stripped - two
+    UTC instants in a DST fall-back fold read identically here."""
+    return dt.astimezone(zone).replace(tzinfo=None).isoformat()
+
+
+def _next_distinct_occurrence(
+    cron: str, tz: str, zone: ZoneInfo, after: datetime
+) -> datetime:
+    """the next occurrence whose LOCAL wall clock differs from `after`'s.
+    in a fall-back fold the same local time exists at two UTC instants and
+    the cron matches both; the stated contract is at-most-once per local
+    occurrence, so the fold's second instant is skipped."""
+    occurrence = next_cron_occurrence(cron, tz, after)
+    while _local_wall(occurrence, zone) == _local_wall(after, zone):
+        occurrence = next_cron_occurrence(cron, tz, occurrence)
+    return occurrence
+
+
 # --- evaluation ------------------------------------------------------------
 
 
@@ -277,27 +303,35 @@ async def evaluate(
 
     if isinstance(rhythm, Calendar):
         tz = await rhythm.tz_of(stream_id)
+        zone = ZoneInfo(tz)
         # fresh keys start their clock now: enabling a 9am brief at 4pm does
         # not owe a retroactive 9am firing
-        last = (
-            datetime.fromisoformat(state.occurrence_key)
-            if state.occurrence_key
-            else now
-        )
-        occurrence = next_cron_occurrence(rhythm.cron, tz, last)
+        fresh = state.occurrence_key is None
+        last = now if fresh else datetime.fromisoformat(state.occurrence_key)
+        occurrence = _next_distinct_occurrence(rhythm.cron, tz, zone, last)
         pending = []
         while occurrence <= now:
             pending.append(occurrence)
-            occurrence = next_cron_occurrence(rhythm.cron, tz, occurrence)
+            occurrence = _next_distinct_occurrence(rhythm.cron, tz, zone, occurrence)
         if not pending:
             return Evaluation(
-                decision=None, next_check=occurrence, next_after_fire=occurrence
+                decision=None,
+                next_check=occurrence,
+                next_after_fire=occurrence,
+                # a fresh rhythm must PERSIST its start boundary: without it,
+                # every poll re-anchors to `now` and the rhythm never fires
+                occurrence_key=last.isoformat() if fresh else None,
             )
         newest = pending[-1]
         if now - newest > CALENDAR_GRACE and rhythm.misfire == "skip":
-            # missed while down; skip to the future rather than firing stale
+            # missed while down; skip to the future rather than firing
+            # stale - and CONSUME the skipped backlog, so it isn't
+            # re-scanned (and can't resurface) on later polls
             return Evaluation(
-                decision=None, next_check=occurrence, next_after_fire=occurrence
+                decision=None,
+                next_check=occurrence,
+                next_after_fire=occurrence,
+                occurrence_key=newest.isoformat(),
             )
         # fire_once collapses any backlog into one firing (the newest);
         # a within-grace occurrence is just normal polling latency
