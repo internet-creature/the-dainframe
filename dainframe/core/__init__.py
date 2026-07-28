@@ -8,6 +8,7 @@ from dainframe.core.agent import (
 )
 from dainframe.core.coordination import InProcessStreamCoordinator, StreamCoordinator
 from dainframe.core.delivery import (
+    BoundedDeliveryLedger,
     Deliverer,
     DeliveryLedger,
     DeliveryReceipt,
@@ -48,6 +49,7 @@ __all__ = [
     "ActivationResult",
     "Agent",
     "AgentOutcome",
+    "BoundedDeliveryLedger",
     "Briefing",
     "BriefingContext",
     "CompositeTurnHooks",
