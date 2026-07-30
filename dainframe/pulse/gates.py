@@ -15,6 +15,7 @@ retry_at unset and rely on the loop's ordinary recheck cadence.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Awaitable, Callable, Optional, Sequence
@@ -23,6 +24,8 @@ from zoneinfo import ZoneInfo
 from dainframe.core.events import Event, EventQuery, EventReader
 from dainframe.pulse.rhythms import as_utc
 from dainframe.pulse.types import FiringPlan, GateDecision
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -130,7 +133,12 @@ class BackoffGate:
 class QuietHoursGate:
     """no proactive send in a stream's local night; applies to every rhythm,
     including backoff chains - being ignored is not license to nag at 3am.
-    `start`/`end` are local hours; start > end wraps midnight (21 -> 8)."""
+    `start`/`end` are local hours; start > end wraps midnight (21 -> 8).
+
+    an unresolvable timezone FAILS CLOSED: not knowing what time it is for
+    the stream is a reason to stay silent, never to guess a zone and nag at
+    night. the denial is loud (a warning per recheck) so a broken tz row or
+    a host missing tzdata surfaces in logs instead of in someone's sleep."""
 
     def __init__(
         self,
@@ -149,7 +157,16 @@ class QuietHoursGate:
         try:
             zone = ZoneInfo(tz)
         except Exception:
-            zone = ZoneInfo("UTC")
+            logger.warning(
+                "quiet hours cannot resolve timezone %r for stream %s; "
+                "failing closed (denying the firing). fix the stored "
+                "timezone or install tzdata",
+                tz,
+                firing.key.stream_id,
+            )
+            return GateDecision(
+                False, f"quiet hours: unresolvable timezone '{tz}' (fail closed)"
+            )
         local = now.astimezone(zone)
         if not self._in_quiet(local.hour):
             return GateDecision(True, "clear")

@@ -10,8 +10,11 @@ readme = "README.md"
 # floor is a deliberate coordinated decision, not an accident of the dev machine
 requires-python = ">=3.10"
 # core/loop/tools carry no provider sdk dependency (DESIGN.md §8);
-# the adapters are extras
-dependencies = []
+# the adapters are extras. tzdata is pure data, not code: it guarantees
+# zoneinfo resolves every IANA name (including legacy links like
+# US/Pacific) regardless of the host's system tz database - a minimal
+# linux install without it made QuietHoursGate silently evaluate UTC
+dependencies = ["tzdata"]
 
 [project.optional-dependencies]
 anthropic = ["anthropic (>=0.69.0)"]
