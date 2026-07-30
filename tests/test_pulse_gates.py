@@ -206,6 +206,39 @@ def test_quiet_hours_uses_the_streams_own_timezone():
     assert not run(quiet.check(plan(), InMemoryEventStore(), at)).allowed
 
 
+def test_quiet_hours_resolves_legacy_link_names():
+    """US/Pacific is a backward-compat link, present in pytz but dropped by
+    minimal system tz databases - the exact name that made the gate silently
+    fall back to UTC in production. the tzdata dependency guarantees it."""
+
+    async def tz_legacy(stream_id):
+        return "US/Pacific"
+
+    quiet = QuietHoursGate(start=21, end=8, tz_of=tz_legacy)
+    # 10:00 UTC = 03:00 pacific (PDT): deep in the local night. the old
+    # fallback saw 10:00 utc and ALLOWED this firing
+    at = datetime(2026, 7, 1, 10, 0, tzinfo=timezone.utc)
+    assert not run(quiet.check(plan(), InMemoryEventStore(), at)).allowed
+
+
+def test_quiet_hours_fails_closed_on_an_unresolvable_timezone(caplog):
+    """not knowing what time it is for the stream denies the firing - loudly.
+    the old behavior guessed UTC, which read as 'daytime' during the user's
+    actual night and let the bot message them at 3am."""
+
+    async def tz_broken(stream_id):
+        return "Not/AZone"
+
+    quiet = QuietHoursGate(start=21, end=8, tz_of=tz_broken)
+    at = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)  # would pass in UTC
+    with caplog.at_level("WARNING", logger="dainframe.pulse.gates"):
+        decision = run(quiet.check(plan(), InMemoryEventStore(), at))
+    assert not decision.allowed
+    assert "Not/AZone" in decision.reason
+    assert decision.retry_at is None  # no horizon computable without a clock
+    assert any("failing closed" in r.message for r in caplog.records)
+
+
 # --- composition ------------------------------------------------------------
 
 

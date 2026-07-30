@@ -170,6 +170,16 @@ class Pulse:
             # policy decide what happens if the denial outlives it)
             verdict = await self.gate.check(plan, events, now)
             if not verdict.allowed:
+                # denials are the loop's most-asked forensic question ("why
+                # didn't it fire?" / "why DID it fire?") - answer it in logs,
+                # not just in the store
+                logger.info(
+                    "pulse denied %s/%s: %s (retry %s)",
+                    stream_id,
+                    tagged.rhythm_id,
+                    verdict.reason,
+                    verdict.retry_at or f"in {self.denial_recheck}",
+                )
                 await self.store.complete(
                     claim,
                     PulseOutcome(status="denied", at=now, detail=verdict.reason),

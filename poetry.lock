@@ -887,6 +887,18 @@ files = [
 [package.dependencies]
 typing-extensions = ">=4.12.0"
 
+[[package]]
+name = "tzdata"
+version = "2026.3"
+description = "Provider of IANA time zone data"
+optional = false
+python-versions = ">=2"
+groups = ["main"]
+files = [
+    {file = "tzdata-2026.3-py2.py3-none-any.whl", hash = "sha256:dc096730c87af6cab1b171c9d532be840741ff5d459015e7f6947bd7d7e54931"},
+    {file = "tzdata-2026.3.tar.gz", hash = "sha256:4a1518b8993086a7982523e071643f3c0e5f213e75b21318e78bcabfff9d1415"},
+]
+
 [extras]
 anthropic = ["anthropic"]
 openai = ["openai"]
@@ -894,4 +906,4 @@ openai = ["openai"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10"
-content-hash = "4796e4e5a155ec302c88baf7b37bb61f85de8af04976f400f5a727c440594f76"
+content-hash = "c366404680f55d4edfde4ad06941622d967698764018e1de7b7b9cd0320611dc"
