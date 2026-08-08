@@ -1,9 +1,11 @@
 """OpenAIProvider request-kwargs tests.
 
-mirrors test_anthropic_kwargs.py: locks down the effort -> reasoning.effort
-mapping. levels shared with openai pass through, anthropic-only levels
-collapse to "high", and no effort means no reasoning key at all (the shape
-non-reasoning models require, same as the anthropic utility tier).
+mirrors test_anthropic_kwargs.py: locks down that effort reaches
+reasoning.effort VERBATIM (the gpt-5.6 generation accepts the full
+none/low/medium/high/xhigh/max ladder - per-route level validation is the
+resolver's job, not the adapter's), and that no effort means no reasoning
+key at all (the shape non-reasoning models require, same as the anthropic
+utility tier).
 """
 
 from dainframe.providers.openai import OpenAIProvider
@@ -24,21 +26,11 @@ def _provider():
     return OpenAIProvider(model="gpt-5.6-terra", api_key="x")
 
 
-def test_effort_maps_to_reasoning():
-    kwargs = _provider()._build_kwargs(_request(effort="low"))
-    assert kwargs["reasoning"] == {"effort": "low"}
-
-
-def test_anthropic_only_levels_collapse_to_high():
+def test_every_level_passes_through_verbatim():
     provider = _provider()
-    assert provider._build_kwargs(_request(effort="xhigh"))["reasoning"] == {"effort": "high"}
-    assert provider._build_kwargs(_request(effort="max"))["reasoning"] == {"effort": "high"}
-
-
-def test_unknown_level_passes_through():
-    # future openai-native levels shouldn't need a dainframe release
-    kwargs = _provider()._build_kwargs(_request(effort="minimal"))
-    assert kwargs["reasoning"] == {"effort": "minimal"}
+    for level in ("none", "low", "medium", "high", "xhigh", "max"):
+        kwargs = provider._build_kwargs(_request(effort=level))
+        assert kwargs["reasoning"] == {"effort": level}
 
 
 def test_no_effort_omits_reasoning():

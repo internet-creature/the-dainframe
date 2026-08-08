@@ -35,9 +35,11 @@ def builder(flavor):
 def table(**kwargs):
     defaults = dict(
         default_provider="anthropic",
-        default_models={"anthropic": "claude-sonnet-5", "openai": "gpt-4o"},
+        default_models={
+            "anthropic": "claude-sonnet-5",
+            "openai": "gpt-5.6-terra",
+        },
         builders={"anthropic": builder("anthropic"), "openai": builder("openai")},
-        effort_support={"anthropic": True, "openai": False},
     )
     defaults.update(kwargs)
     return ProviderTable(**defaults)
@@ -56,7 +58,7 @@ def test_model_and_provider_hints_route():
     fast = t.resolve(ExecutionHints(model="claude-haiku-4-5"), agent="scorer")
     assert (fast.provider_name, fast.model) == ("anthropic", "claude-haiku-4-5")
     other = t.resolve(ExecutionHints(provider="openai"), agent="aria")
-    assert (other.provider_name, other.model) == ("openai", "gpt-4o")
+    assert (other.provider_name, other.model) == ("openai", "gpt-5.6-terra")
     assert other.provider.flavor == "openai"
 
 
@@ -80,20 +82,45 @@ def test_provider_without_default_model_needs_an_explicit_one():
     with pytest.raises(HintResolutionError, match="no model"):
         t.resolve(ExecutionHints(provider="openai"), agent="aria")
     # ...but an explicit model hint clears it
-    r = t.resolve(ExecutionHints(provider="openai", model="gpt-4o"), agent="a")
-    assert r.model == "gpt-4o"
+    r = t.resolve(ExecutionHints(provider="openai", model="gpt-5.6-luna"), agent="a")
+    assert r.model == "gpt-5.6-luna"
+
+
+def test_effort_hints_route_to_openai():
+    """the shipped table honors effort on BOTH adapters - an openai effort
+    hint resolves and carries the level through to the run."""
+    r = table().resolve(ExecutionHints(provider="openai", effort="low"), agent="scorer")
+    assert (r.provider_name, r.effort) == ("openai", "low")
+    # openai-only "none" resolves too
+    r = table().resolve(ExecutionHints(provider="openai", effort="none"), agent="s")
+    assert r.effort == "none"
 
 
 def test_effort_on_an_unsupporting_provider_fails_loudly():
-    """the openai adapter silently ignores effort it was never told about;
-    an effort HINT routed there is the silent degradation §4.8 forbids."""
+    """an effort HINT routed to a provider an app has declared effort-less
+    is the silent degradation §4.8 forbids."""
+    t = table(effort_support={"anthropic": True, "openai": False})
     with pytest.raises(HintResolutionError, match="cannot honor effort"):
-        table().resolve(ExecutionHints(provider="openai", effort="low"), agent="scorer")
+        t.resolve(ExecutionHints(provider="openai", effort="low"), agent="scorer")
 
 
 def test_unknown_effort_level_fails_loudly():
     with pytest.raises(HintResolutionError, match="unknown effort"):
         table().resolve(ExecutionHints(effort="maximal"), agent="aria")
+
+
+def test_levels_are_per_provider():
+    t = table()
+    # anthropic's ladder tops out at xhigh/max but has no "none"
+    assert t.resolve(ExecutionHints(effort="xhigh"), agent="a").effort == "xhigh"
+    with pytest.raises(HintResolutionError, match="unknown effort"):
+        t.resolve(ExecutionHints(effort="none"), agent="a")
+    # narrowed levels (e.g. an app routed to an older openai model)
+    narrow = table(
+        effort_levels={"anthropic": frozenset({"low"}), "openai": frozenset({"low"})}
+    )
+    with pytest.raises(HintResolutionError, match="unknown effort"):
+        narrow.resolve(ExecutionHints(provider="openai", effort="xhigh"), agent="a")
 
 
 def test_misconfigured_defaults_fail_at_construction():
@@ -117,4 +144,8 @@ def test_shipped_builders_and_effort_map_are_the_defaults():
         default_models={"anthropic": "claude-sonnet-5"},
     )
     assert set(t.builders) == {"anthropic", "openai"}
-    assert t.effort_support == {"anthropic": True, "openai": False}
+    assert t.effort_support == {"anthropic": True, "openai": True}
+    assert t.effort_levels == {
+        "anthropic": frozenset({"low", "medium", "high", "xhigh", "max"}),
+        "openai": frozenset({"none", "low", "medium", "high", "xhigh", "max"}),
+    }
