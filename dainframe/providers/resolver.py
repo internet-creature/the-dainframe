@@ -83,13 +83,20 @@ _DEFAULT_BUILDERS: Mapping[str, ProviderBuilder] = {
 }
 
 # which shipped adapters can honor the `effort` dial. apps overriding
-# builders can override this too.
+# builders can override this too (policy: "may this route carry effort").
 _DEFAULT_EFFORT_SUPPORT: Mapping[str, bool] = {
     "anthropic": True,
-    "openai": False,
+    "openai": True,
 }
 
-_EFFORT_LEVELS = frozenset({"low", "medium", "high"})
+# the levels each shipped adapter's current model generation accepts
+# (capability: "which values are valid here"). anthropic's output_config
+# has no "none" - omit the hint instead; openai's reasoning.effort does.
+# apps routed to older models can narrow these via `effort_levels`.
+_DEFAULT_EFFORT_LEVELS: Mapping[str, frozenset] = {
+    "anthropic": frozenset({"low", "medium", "high", "xhigh", "max"}),
+    "openai": frozenset({"none", "low", "medium", "high", "xhigh", "max"}),
+}
 
 
 class ProviderTable:
@@ -101,6 +108,7 @@ class ProviderTable:
         limiter: Optional[ConcurrencyLimiter] = None,
         builders: Optional[Mapping[str, ProviderBuilder]] = None,
         effort_support: Optional[Mapping[str, bool]] = None,
+        effort_levels: Optional[Mapping[str, frozenset]] = None,
     ):
         self.default_provider = default_provider
         self.default_models = dict(default_models)
@@ -112,6 +120,11 @@ class ProviderTable:
             dict(effort_support)
             if effort_support is not None
             else dict(_DEFAULT_EFFORT_SUPPORT)
+        )
+        self.effort_levels = (
+            dict(effort_levels)
+            if effort_levels is not None
+            else dict(_DEFAULT_EFFORT_LEVELS)
         )
         self._instances: dict[tuple[str, str], BaseAIProvider] = {}
         if default_provider not in self.builders:
@@ -136,16 +149,18 @@ class ProviderTable:
                 "and no configured default model"
             )
         if hints.effort is not None:
-            if hints.effort not in _EFFORT_LEVELS:
-                raise HintResolutionError(
-                    f"unknown effort '{hints.effort}' hinted for agent "
-                    f"'{agent}' (expected one of {sorted(_EFFORT_LEVELS)})"
-                )
             if not self.effort_support.get(name, False):
                 raise HintResolutionError(
                     f"provider '{name}' cannot honor effort "
                     f"(hinted '{hints.effort}' for agent '{agent}'); route "
                     "the line to a provider that can, or drop the hint"
+                )
+            levels = self.effort_levels.get(name, frozenset())
+            if hints.effort not in levels:
+                raise HintResolutionError(
+                    f"unknown effort '{hints.effort}' for provider '{name}' "
+                    f"hinted for agent '{agent}' "
+                    f"(expected one of {sorted(levels)})"
                 )
         key = (name, model)
         if key not in self._instances:

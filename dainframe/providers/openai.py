@@ -23,7 +23,14 @@ logger = logging.getLogger(__name__)
 class OpenAIProvider(BaseAIProvider):
     """openai provider (Responses API), adapted to the neutral interface.
 
-    cache hints and `effort` are anthropic concepts and are ignored here.
+    cache hints are anthropic concepts and are ignored here (openai
+    prefix-caches automatically). `effort` is honored: it goes onto
+    `reasoning.effort` VERBATIM - the gpt-5.6 generation accepts the full
+    none/low/medium/high/xhigh/max ladder, and a level an older model
+    rejects should fail loudly at the API, never silently degrade
+    (validating levels per route is the resolver's job). effort is only
+    sent when the request supplies it - non-reasoning models must be
+    paired with effort=None requests, same as the anthropic utility tier.
     """
 
     def __init__(
@@ -39,15 +46,21 @@ class OpenAIProvider(BaseAIProvider):
         # ceiling; a provider constructed without one gets a private default.
         self.limiter = limiter or ConcurrencyLimiter()
 
-    async def create_message(self, request: AIRequest) -> AIResponse:
+    def _build_kwargs(self, request: AIRequest) -> dict:
         kwargs = {
             "model": self.model,
             "instructions": "\n\n".join(b.text for b in request.system),
             "input": self._render_input(request.messages),
             "max_output_tokens": request.max_tokens,
         }
+        if request.effort:
+            kwargs["reasoning"] = {"effort": request.effort}
         if request.tools:
             kwargs["tools"] = self._render_tools(request.tools)
+        return kwargs
+
+    async def create_message(self, request: AIRequest) -> AIResponse:
+        kwargs = self._build_kwargs(request)
 
         try:
             async with self.limiter:
@@ -85,11 +98,13 @@ class OpenAIProvider(BaseAIProvider):
 
             if turn.tool_results:
                 for r in turn.tool_results:
-                    items.append({
-                        "type": "function_call_output",
-                        "call_id": r.tool_call_id,
-                        "output": r.content,
-                    })
+                    items.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": r.tool_call_id,
+                            "output": r.content,
+                        }
+                    )
                 continue
 
             items.append({"role": turn.role, "content": turn.content or ""})
@@ -117,12 +132,14 @@ class OpenAIProvider(BaseAIProvider):
                 except json.JSONDecodeError:
                     parsed_args = {}
                 tool_calls.append(ToolCall(id=call_id, name=name, input=parsed_args))
-                echo_blocks.append({
-                    "type": "function_call",
-                    "call_id": call_id,
-                    "name": name,
-                    "arguments": raw_args,
-                })
+                echo_blocks.append(
+                    {
+                        "type": "function_call",
+                        "call_id": call_id,
+                        "name": name,
+                        "arguments": raw_args,
+                    }
+                )
 
         text = "".join(text_parts).strip() or None
 

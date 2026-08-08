@@ -92,7 +92,10 @@ class AIRequest:
     messages: list[ChatTurn]
     tools: list[ToolDef] = field(default_factory=list)
     max_tokens: int = 2048
-    effort: Optional[str] = None   # "low" | "medium" | "high" (anthropic)
+    # neutral reasoning-depth dial. anthropic: low|medium|high|xhigh|max
+    # (output_config.effort); openai: none|low|medium|high|xhigh|max
+    # (reasoning.effort). per-route validation lives in the resolver.
+    effort: Optional[str] = None
 
 
 @dataclass
