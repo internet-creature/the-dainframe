@@ -20,10 +20,24 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 
+# the neutral `effort` dial maps onto the Responses API's reasoning.effort.
+# anthropic grew levels openai doesn't have; those collapse to "high". values
+# not listed here pass through verbatim, so a future openai level works
+# without a release and a typo fails loudly at the API instead of silently.
+_EFFORT_MAP = {
+    "xhigh": "high",
+    "max": "high",
+}
+
+
 class OpenAIProvider(BaseAIProvider):
     """openai provider (Responses API), adapted to the neutral interface.
 
-    cache hints and `effort` are anthropic concepts and are ignored here.
+    cache hints are anthropic concepts and are ignored here (openai
+    prefix-caches automatically). `effort` is honored: it maps onto
+    `reasoning.effort`, and is only sent when the request supplies it -
+    non-reasoning models must be paired with effort=None requests, same as
+    the anthropic utility tier.
     """
 
     def __init__(
@@ -39,15 +53,23 @@ class OpenAIProvider(BaseAIProvider):
         # ceiling; a provider constructed without one gets a private default.
         self.limiter = limiter or ConcurrencyLimiter()
 
-    async def create_message(self, request: AIRequest) -> AIResponse:
+    def _build_kwargs(self, request: AIRequest) -> dict:
         kwargs = {
             "model": self.model,
             "instructions": "\n\n".join(b.text for b in request.system),
             "input": self._render_input(request.messages),
             "max_output_tokens": request.max_tokens,
         }
+        if request.effort:
+            kwargs["reasoning"] = {
+                "effort": _EFFORT_MAP.get(request.effort, request.effort)
+            }
         if request.tools:
             kwargs["tools"] = self._render_tools(request.tools)
+        return kwargs
+
+    async def create_message(self, request: AIRequest) -> AIResponse:
+        kwargs = self._build_kwargs(request)
 
         try:
             async with self.limiter:
