@@ -799,6 +799,26 @@ with the dainframe:
 - **`QuietHoursGate(start, end, tz_of)`** — no proactive send in a stream's
   local night; applies to every rhythm, including backoff chains ("being
   ignored is not license to nag at 3am").
+- **`CadenceGate(cadence, tz_of=...)`** — the long-tail alternative to
+  `BackoffGate`: unanswered outreach climbs an explicit ladder of waits
+  instead of doubling toward a cap. the ladder is a declarative spec with a
+  compact string form — `Cadence.parse("1d x3, 1w x3, 60d @ 8-11")` reads
+  "daily for three tries, weekly for three, then every sixty days forever,
+  landing between 8 and 11 local" — so it can live in an env var, a settings
+  row, or a chat tool's argument, and every consumer app speaks the same
+  language. a final rung without a try count is the eternal floor (presence
+  never tapers to zero); with one, the ladder exhausts into
+  silence-until-they-speak, the old cap shape. `cadence` may be a per-stream
+  async callable, which is the seam for user overrides ("hold me at monthly"
+  is just a stored one-rung spec). everything derives from the event log:
+  any user message resets the ladder. two honesty rules keep the arithmetic
+  safe at the edges: denial horizons are bounded by `max_sleep` (default six
+  hours), because the pulse sleeps on a persisted horizon without consulting
+  events — the long floor becomes cheap periodic rechecks so a reply or a
+  changed spec takes hold within one bound; and the event read is never
+  narrower than the ladder's counted rungs, with a saturated no-user window
+  reading as "past every counted rung" so a truncated count can't re-arm
+  rungs the chain already spent.
 - **`AllOf(gates)`** — first denial wins, reasons preserved.
 
 `BackoffGate` requires `FiringPlan.actor` when `per_author_cap` is enabled;

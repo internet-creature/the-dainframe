@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from dainframe.core.events import EventQuery, InMemoryEventStore, NewEvent
 from dainframe.pulse import (
     BackoffGate,
+    Cadence,
+    CadenceGate,
     FiringPlan,
     Interval,
     NoNewerEvent,
@@ -79,6 +81,25 @@ def test_backoff_gate_compares_naive_rows_against_aware_now():
     decision = run(gate.check(plan, store, AWARE_NOW))
     assert not decision.allowed
     assert decision.retry_at == datetime(2026, 7, 1, 14, 0, tzinfo=timezone.utc)
+
+
+def test_cadence_gate_compares_naive_rows_against_aware_now():
+    store = naive_store(
+        created_at=datetime(2026, 7, 1, 11, 0),  # 1h ago, naive
+        message_type="scheduled",
+        author_type="agent",
+        author="aria",
+    )
+    gate = CadenceGate(Cadence.parse("1d"), max_sleep=None)
+    plan = FiringPlan(
+        key=RhythmKey(stream_id="s", rhythm_id="r"),
+        kind="tick",
+        due_at=AWARE_NOW,
+        actor="aria",
+    )
+    decision = run(gate.check(plan, store, AWARE_NOW))
+    assert not decision.allowed
+    assert decision.retry_at == datetime(2026, 7, 2, 11, 0, tzinfo=timezone.utc)
 
 
 def test_no_newer_event_mixes_naive_rows_and_aware_horizons():
