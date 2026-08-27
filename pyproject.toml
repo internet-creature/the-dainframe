@@ -1,6 +1,8 @@
 [project]
 name = "dainframe"
-version = "0.0.1"
+# tracks the latest release tag (v0.1.0 = the cadence release): consumer-facing
+# api changes bump this and get an annotated tag carrying the changelog
+version = "0.1.0"
 description = "a stimulus-driven multi-agent orchestration framework with an ambient pulse"
 authors = [
     {name = "DainDeer", email = "jalarison@gmail.com"}
