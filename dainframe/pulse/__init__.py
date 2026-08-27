@@ -1,3 +1,4 @@
+from dainframe.pulse.cadence import Cadence, CadenceGate, DeliveryHours, Rung
 from dainframe.pulse.gates import AllOf, BackoffGate, NoNewerEvent, QuietHoursGate
 from dainframe.pulse.loop import Pulse
 from dainframe.pulse.rhythms import (
@@ -35,9 +36,12 @@ from dainframe.pulse.types import (
 __all__ = [
     "AllOf",
     "BackoffGate",
+    "Cadence",
+    "CadenceGate",
     "Calendar",
     "Decider",
     "Decision",
+    "DeliveryHours",
     "Dynamic",
     "Evaluation",
     "FiringPlan",
@@ -56,9 +60,11 @@ __all__ = [
     "Rhythm",
     "RhythmDecision",
     "RhythmKey",
+    "Rung",
     "StaleClaimError",
     "StimulusFactory",
     "TaggedRhythm",
+    "as_utc",
     "evaluate",
     "next_cron_occurrence",
     "parse_cron",

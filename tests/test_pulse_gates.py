@@ -11,11 +11,15 @@ from dainframe.core.events import EventQuery, InMemoryEventStore, NewEvent
 from dainframe.pulse import (
     AllOf,
     BackoffGate,
+    Cadence,
+    CadenceGate,
+    DeliveryHours,
     FiringPlan,
     GateDecision,
     NoNewerEvent,
     QuietHoursGate,
     RhythmKey,
+    Rung,
 )
 
 T0 = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
@@ -236,6 +240,222 @@ def test_quiet_hours_fails_closed_on_an_unresolvable_timezone(caplog):
     assert not decision.allowed
     assert "Not/AZone" in decision.reason
     assert decision.retry_at is None  # no horizon computable without a clock
+    assert any("failing closed" in r.message for r in caplog.records)
+
+
+# --- cadence ----------------------------------------------------------------
+
+
+def test_cadence_parse_round_trips_the_canonical_spec():
+    cadence = Cadence.parse("1d x3, 1w x3, 60d @ 8-11")
+    assert cadence.rungs == (
+        Rung(every=timedelta(days=1), tries=3),
+        Rung(every=timedelta(weeks=1), tries=3),
+        Rung(every=timedelta(days=60), tries=None),
+    )
+    assert cadence.during == DeliveryHours(start=8, end=11)
+    assert str(cadence) == "1d x3, 1w x3, 60d @ 8-11"
+    assert str(Cadence.parse("90m x2, 6h")) == "90m x2, 6h"
+
+
+def test_cadence_parse_rejects_specs_that_could_misfire():
+    for bad in (
+        "",
+        "1y x3",  # unknown unit
+        "0d",  # zero wait
+        "1d x0",  # zero tries
+        "1d, 1w x3",  # uncounted rung before the end: 1w unreachable
+        "1d @ 8",  # malformed hours
+        "1d @ 8-8",  # empty hours
+        "1d @ 8-24",  # hour out of range
+    ):
+        with pytest.raises(ValueError):
+            Cadence.parse(bad)
+
+
+def test_cadence_wait_walks_the_ladder_and_reports_exhaustion():
+    ladder = Cadence.parse("1d x3, 1w x3, 60d")
+    assert [ladder.wait_for(n) for n in (1, 2, 3)] == [timedelta(days=1)] * 3
+    assert [ladder.wait_for(n) for n in (4, 6)] == [timedelta(weeks=1)] * 2
+    assert ladder.wait_for(7) == timedelta(days=60)
+    assert ladder.wait_for(100) == timedelta(days=60)  # the eternal floor
+    capped = Cadence.parse("1d x2")
+    assert capped.wait_for(2) == timedelta(days=1)
+    assert capped.wait_for(3) is None
+
+
+def cadence_gate(spec="1d x3, 1w x3, 60d", **kwargs):
+    return CadenceGate(Cadence.parse(spec), **kwargs)
+
+
+def test_cadence_clear_when_the_user_spoke_last():
+    events = SeededStore(
+        [
+            scheduled("aria", T0 - timedelta(hours=10)),
+            user(T0 - timedelta(hours=1)),
+        ]
+    )
+    assert run(cadence_gate().check(plan(), events, T0)).allowed
+
+
+def test_cadence_first_rung_holds_a_day():
+    newest = T0 - timedelta(hours=4)
+    events = SeededStore([user(T0 - timedelta(days=1)), scheduled("aria", newest)])
+    decision = run(cadence_gate().check(plan(), events, T0))
+    assert not decision.allowed
+    assert "cadence" in decision.reason
+    assert decision.retry_at == newest + timedelta(days=1)
+    later = newest + timedelta(days=1, minutes=1)
+    assert run(cadence_gate().check(plan(), events, later)).allowed
+
+
+def test_cadence_climbs_to_the_weekly_rung():
+    newest = T0 - timedelta(days=2)
+    events = SeededStore(
+        [
+            user(T0 - timedelta(days=30)),
+            scheduled("aria", T0 - timedelta(days=10)),
+            scheduled("aria", T0 - timedelta(days=8)),
+            scheduled("aria", T0 - timedelta(days=5)),
+            scheduled("aria", newest),
+        ]
+    )
+    decision = run(cadence_gate().check(plan(), events, T0))
+    assert not decision.allowed
+    assert decision.retry_at == newest + timedelta(weeks=1)
+    later = newest + timedelta(weeks=1, minutes=1)
+    assert run(cadence_gate().check(plan(), events, later)).allowed
+
+
+def test_cadence_floor_never_exhausts():
+    """nine unanswered outreaches deep, the sixty-day floor still answers -
+    presence never tapers to zero unless the ladder says so."""
+    rows = [user(T0 - timedelta(days=300))]
+    for days_ago in (200, 190, 180, 170, 160, 150, 140, 120):
+        rows.append(scheduled("aria", T0 - timedelta(days=days_ago)))
+    rows.append(scheduled("aria", T0 - timedelta(days=61)))
+    events = SeededStore(rows)
+    assert run(cadence_gate().check(plan(), events, T0)).allowed
+
+
+def test_cadence_capped_ladder_goes_quiet_until_they_speak():
+    rows = [
+        user(T0 - timedelta(days=10)),
+        scheduled("aria", T0 - timedelta(days=6)),
+        scheduled("aria", T0 - timedelta(days=5)),
+        scheduled("aria", T0 - timedelta(days=3)),
+    ]
+    decision = run(cadence_gate("1d x2").check(plan(), SeededStore(rows), T0))
+    assert not decision.allowed
+    assert "exhausted" in decision.reason
+    assert decision.retry_at is None  # only the user speaking clears it
+    replied = SeededStore(rows + [user(T0 - timedelta(hours=1))])
+    assert run(cadence_gate("1d x2").check(plan(), replied, T0)).allowed
+
+
+def test_cadence_delivery_hours_land_the_morning():
+    gate = cadence_gate("1d x3 @ 8-11", tz_of=tz_utc)
+    newest = datetime(2026, 7, 1, 9, 0, tzinfo=timezone.utc)
+    events = SeededStore(
+        [
+            user(datetime(2026, 6, 30, 9, 0, tzinfo=timezone.utc)),
+            scheduled("aria", newest),
+        ]
+    )
+    # the day is not up yet: the horizon is tomorrow 9:00, already a morning
+    early = datetime(2026, 7, 2, 8, 30, tzinfo=timezone.utc)
+    decision = run(gate.check(plan(), events, early))
+    assert not decision.allowed
+    assert decision.retry_at == datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc)
+    assert run(gate.check(plan(), events, decision.retry_at)).allowed
+
+    # an afternoon outreach's horizon snaps forward to the NEXT morning
+    afternoon = SeededStore(
+        [user(datetime(2026, 6, 30, 9, 0, tzinfo=timezone.utc)), scheduled("aria", T0)]
+    )
+    decision = run(
+        gate.check(plan(), afternoon, datetime(2026, 7, 2, 13, 0, tzinfo=timezone.utc))
+    )
+    assert not decision.allowed
+    assert decision.retry_at == datetime(2026, 7, 3, 8, 0, tzinfo=timezone.utc)
+
+
+def test_cadence_delivery_hours_use_the_streams_own_timezone():
+    async def tz_tokyo(stream_id):
+        return "Asia/Tokyo"
+
+    gate = cadence_gate("1d x3 @ 8-11", tz_of=tz_tokyo)
+    # 23:30 UTC = 08:30 next day in tokyo, so tomorrow's horizon is a morning
+    newest = datetime(2026, 7, 1, 23, 30, tzinfo=timezone.utc)
+    events = SeededStore(
+        [
+            user(datetime(2026, 6, 30, 9, 0, tzinfo=timezone.utc)),
+            scheduled("aria", newest),
+        ]
+    )
+    decision = run(
+        gate.check(plan(), events, datetime(2026, 7, 2, 23, 0, tzinfo=timezone.utc))
+    )
+    assert not decision.allowed
+    assert decision.retry_at == datetime(2026, 7, 2, 23, 30, tzinfo=timezone.utc)
+    later = datetime(2026, 7, 2, 23, 45, tzinfo=timezone.utc)
+    assert run(gate.check(plan(), events, later)).allowed
+
+
+def test_cadence_missed_window_waits_for_the_next_opening():
+    """the horizon passed while the window was shut (a pulse outage, a long
+    deny): the gate holds for the next opening instead of firing mid-day."""
+    gate = cadence_gate("1d x3 @ 8-11", tz_of=tz_utc)
+    newest = datetime(2026, 7, 1, 9, 0, tzinfo=timezone.utc)
+    events = SeededStore(
+        [
+            user(datetime(2026, 6, 30, 9, 0, tzinfo=timezone.utc)),
+            scheduled("aria", newest),
+        ]
+    )
+    decision = run(
+        gate.check(plan(), events, datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc))
+    )
+    assert not decision.allowed
+    assert decision.retry_at == datetime(2026, 7, 3, 8, 0, tzinfo=timezone.utc)
+
+
+def test_cadence_per_stream_specs_resolve_through_the_callable():
+    """the override seam: 'hold me at monthly' is a one-rung cadence the
+    app hands back for this stream."""
+
+    async def cadence_of(stream_id):
+        assert stream_id == "s"
+        return Cadence.parse("60d")
+
+    newest = T0 - timedelta(days=2)
+    events = SeededStore([user(T0 - timedelta(days=3)), scheduled("aria", newest)])
+    decision = run(CadenceGate(cadence_of).check(plan(), events, T0))
+    assert not decision.allowed
+    assert decision.retry_at == newest + timedelta(days=60)
+
+
+def test_cadence_delivery_hours_require_a_clock():
+    events = SeededStore(
+        [user(T0 - timedelta(days=2)), scheduled("aria", T0 - timedelta(days=1))]
+    )
+    with pytest.raises(ValueError):
+        run(cadence_gate("1d @ 8-11").check(plan(), events, T0))
+
+
+def test_cadence_fails_closed_on_an_unresolvable_timezone(caplog):
+    async def tz_broken(stream_id):
+        return "Not/AZone"
+
+    gate = cadence_gate("1d @ 8-11", tz_of=tz_broken)
+    events = SeededStore(
+        [user(T0 - timedelta(days=3)), scheduled("aria", T0 - timedelta(days=2))]
+    )
+    with caplog.at_level("WARNING", logger="dainframe.pulse.cadence"):
+        decision = run(gate.check(plan(), events, T0))
+    assert not decision.allowed
+    assert "Not/AZone" in decision.reason
+    assert decision.retry_at is None
     assert any("failing closed" in r.message for r in caplog.records)
 
 
