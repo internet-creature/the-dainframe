@@ -811,7 +811,14 @@ with the dainframe:
   silence-until-they-speak, the old cap shape. `cadence` may be a per-stream
   async callable, which is the seam for user overrides ("hold me at monthly"
   is just a stored one-rung spec). everything derives from the event log:
-  any user message resets the ladder.
+  any user message resets the ladder. two honesty rules keep the arithmetic
+  safe at the edges: denial horizons are bounded by `max_sleep` (default six
+  hours), because the pulse sleeps on a persisted horizon without consulting
+  events — the long floor becomes cheap periodic rechecks so a reply or a
+  changed spec takes hold within one bound; and the event read is never
+  narrower than the ladder's counted rungs, with a saturated no-user window
+  reading as "past every counted rung" so a truncated count can't re-arm
+  rungs the chain already spent.
 - **`AllOf(gates)`** — first denial wins, reasons preserved.
 
 `BackoffGate` requires `FiringPlan.actor` when `per_author_cap` is enabled;

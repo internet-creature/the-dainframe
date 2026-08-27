@@ -90,7 +90,7 @@ def test_cadence_gate_compares_naive_rows_against_aware_now():
         author_type="agent",
         author="aria",
     )
-    gate = CadenceGate(Cadence.parse("1d"))
+    gate = CadenceGate(Cadence.parse("1d"), max_sleep=None)
     plan = FiringPlan(
         key=RhythmKey(stream_id="s", rhythm_id="r"),
         kind="tick",

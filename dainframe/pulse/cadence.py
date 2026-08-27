@@ -119,11 +119,16 @@ class Cadence:
                 )
             if tries is not None and int(tries) < 1:
                 raise ValueError(f"cadence rung needs at least one try: {piece!r}")
+            try:
+                every = timedelta(seconds=int(amount) * _UNIT[unit.lower()])
+            except OverflowError:
+                # the contract is ValueError for any bad spec - a caller
+                # validating user input must not need a second except arm
+                raise ValueError(
+                    f"cadence rung is longer than time itself: {piece!r}"
+                ) from None
             rungs.append(
-                Rung(
-                    every=timedelta(seconds=int(amount) * _UNIT[unit.lower()]),
-                    tries=int(tries) if tries is not None else None,
-                )
+                Rung(every=every, tries=int(tries) if tries is not None else None)
             )
         for rung in rungs[:-1]:
             if rung.tries is None:
@@ -132,6 +137,12 @@ class Cadence:
                     "rungs after an uncounted one could never be reached"
                 )
         return Cadence(rungs=tuple(rungs), during=during)
+
+    @property
+    def finite_tries(self) -> int:
+        """how many waits the counted rungs cover - the depth beyond which
+        every count lands on the open floor (or exhausts a capped ladder)."""
+        return sum(r.tries for r in self.rungs if r.tries is not None)
 
     def wait_for(self, unanswered: int) -> Optional[timedelta]:
         """the required quiet after the nth unanswered outreach (n >= 1).
@@ -189,7 +200,22 @@ class CadenceGate:
     arithmetic as the backoff gate, so any user message anywhere resets
     the ladder; delivery hours need `tz_of`, and an unresolvable timezone
     fails closed exactly like the quiet-hours gate - not knowing what time
-    it is for the stream is a reason to stay silent, never to guess."""
+    it is for the stream is a reason to stay silent, never to guess.
+
+    denial horizons are bounded by `max_sleep` (default six hours): the
+    pulse persists a denial's retry horizon and sleeps on it WITHOUT
+    consulting events, so an unbounded sixty-day horizon would sleep
+    through the very reply that should have reset the ladder (and through
+    any cadence change). bounding it turns the long floor into cheap
+    periodic rechecks - one event read per bound, zero tokens - so a reply
+    or a new spec takes hold within one `max_sleep`. None disables the
+    bound; only safe with a store that invalidates horizons on events.
+
+    the event read is never narrower than the ladder: the query limit is
+    at least `finite_tries + 1`, and a window that comes back saturated
+    with no user message in it reads as "past every counted rung" - which
+    exhausts a capped ladder and floors an open one, instead of a
+    truncated count re-arming rungs the chain already spent."""
 
     def __init__(
         self,
@@ -198,11 +224,18 @@ class CadenceGate:
         proactive_message_type: str = "scheduled",
         window: int = 100,
         tz_of: Optional[Callable[[str], Awaitable[str]]] = None,
+        max_sleep: Optional[timedelta] = timedelta(hours=6),
     ):
         self.cadence = cadence
         self.proactive_message_type = proactive_message_type
         self.window = window
         self.tz_of = tz_of
+        self.max_sleep = max_sleep
+
+    def _bounded(self, horizon: datetime, now: datetime) -> datetime:
+        if self.max_sleep is None:
+            return horizon
+        return min(horizon, as_utc(now) + self.max_sleep)
 
     async def _resolve(self, stream_id: str) -> Cadence:
         if isinstance(self.cadence, Cadence):
@@ -212,66 +245,78 @@ class CadenceGate:
     async def check(
         self, firing: FiringPlan, events: EventReader, now: datetime
     ) -> GateDecision:
+        spec = await self._resolve(firing.key.stream_id)
+        limit = max(self.window, spec.finite_tries + 1)
         window = await events.read(
-            EventQuery(kinds=frozenset({"message"}), message_limit=self.window)
+            EventQuery(kinds=frozenset({"message"}), message_limit=limit)
         )
         unanswered = _unanswered_proactive(window, self.proactive_message_type)
         if not unanswered:
             return GateDecision(True, "clear")
 
-        spec = await self._resolve(firing.key.stream_id)
-        wait = spec.wait_for(len(unanswered))
+        n = len(unanswered)
+        saturated = len(window) == limit and not any(
+            e.author_type == "user" for e in window
+        )
+        if saturated:
+            # the true count is only bounded below - read it as past every
+            # counted rung: a capped ladder exhausts, an open one floors
+            n = max(n, spec.finite_tries + 1)
+        wait = spec.wait_for(n)
         if wait is None:
             return GateDecision(False, "cadence exhausted: quiet until they speak")
 
         newest = as_utc(unanswered[-1].created_at)
         retry_at = newest + wait
-        if spec.during is None:
-            if as_utc(now) < retry_at:
-                elapsed = as_utc(now) - newest
+        zone = None
+        landing = ""
+        if spec.during is not None:
+            if self.tz_of is None:
+                raise ValueError(
+                    "a cadence with delivery hours requires tz_of; the gate "
+                    "cannot place a local morning without a clock"
+                )
+            tz = await self.tz_of(firing.key.stream_id)
+            try:
+                zone = ZoneInfo(tz)
+            except Exception:
+                logger.warning(
+                    "cadence cannot resolve timezone %r for stream %s; failing "
+                    "closed (denying the firing). fix the stored timezone or "
+                    "install tzdata",
+                    tz,
+                    firing.key.stream_id,
+                )
+                return GateDecision(
+                    False, f"cadence: unresolvable timezone '{tz}' (fail closed)"
+                )
+            landing = f", landing {spec.during.start}-{spec.during.end} local"
+            # snap in local wall time, then compare as UTC INSTANTS: aware
+            # datetimes sharing a tzinfo compare by wall clock (PEP 495),
+            # which misorders the DST fall-back's repeated hour and can
+            # hand back a horizon already in the past
+            snapped = spec.during.snap(retry_at.astimezone(zone))
+            retry_at = max(snapped.astimezone(timezone.utc), retry_at)
+
+        if as_utc(now) < retry_at:
+            elapsed = as_utc(now) - newest
+            return GateDecision(
+                False,
+                f"cadence: {wait} required, {elapsed} elapsed{landing}",
+                retry_at=self._bounded(retry_at, now),
+            )
+        if spec.during is not None:
+            local_now = as_utc(now).astimezone(zone)
+            if not spec.during.contains(local_now.hour):
+                # the horizon passed while the window was shut (a long pulse
+                # outage, a stretched deny) - wait for the next opening
                 return GateDecision(
                     False,
-                    f"cadence: {wait} required, {elapsed} elapsed",
-                    retry_at=retry_at,
+                    f"cadence: outside delivery hours "
+                    f"({spec.during.start}-{spec.during.end} local)",
+                    retry_at=self._bounded(
+                        spec.during.next_start(local_now).astimezone(timezone.utc),
+                        now,
+                    ),
                 )
-            return GateDecision(True, "clear")
-
-        if self.tz_of is None:
-            raise ValueError(
-                "a cadence with delivery hours requires tz_of; the gate "
-                "cannot place a local morning without a clock"
-            )
-        tz = await self.tz_of(firing.key.stream_id)
-        try:
-            zone = ZoneInfo(tz)
-        except Exception:
-            logger.warning(
-                "cadence cannot resolve timezone %r for stream %s; failing "
-                "closed (denying the firing). fix the stored timezone or "
-                "install tzdata",
-                tz,
-                firing.key.stream_id,
-            )
-            return GateDecision(
-                False, f"cadence: unresolvable timezone '{tz}' (fail closed)"
-            )
-
-        local_now = as_utc(now).astimezone(zone)
-        target = spec.during.snap(retry_at.astimezone(zone))
-        if local_now < target:
-            return GateDecision(
-                False,
-                f"cadence: {wait} required, landing "
-                f"{spec.during.start}-{spec.during.end} local",
-                retry_at=target.astimezone(timezone.utc),
-            )
-        if not spec.during.contains(local_now.hour):
-            # the horizon passed while the window was shut (a long pulse
-            # outage, a stretched deny) - wait for the next opening
-            return GateDecision(
-                False,
-                f"cadence: outside delivery hours "
-                f"({spec.during.start}-{spec.during.end} local)",
-                retry_at=spec.during.next_start(local_now).astimezone(timezone.utc),
-            )
         return GateDecision(True, "clear")

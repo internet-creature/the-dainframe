@@ -268,6 +268,7 @@ def test_cadence_parse_rejects_specs_that_could_misfire():
         "1d @ 8",  # malformed hours
         "1d @ 8-8",  # empty hours
         "1d @ 8-24",  # hour out of range
+        "999999999999d",  # would overflow timedelta - still ValueError
     ):
         with pytest.raises(ValueError):
             Cadence.parse(bad)
@@ -285,6 +286,9 @@ def test_cadence_wait_walks_the_ladder_and_reports_exhaustion():
 
 
 def cadence_gate(spec="1d x3, 1w x3, 60d", **kwargs):
+    # max_sleep=None so these tests assert the LADDER's exact horizons;
+    # the bound has its own tests below
+    kwargs.setdefault("max_sleep", None)
     return CadenceGate(Cadence.parse(spec), **kwargs)
 
 
@@ -430,7 +434,7 @@ def test_cadence_per_stream_specs_resolve_through_the_callable():
 
     newest = T0 - timedelta(days=2)
     events = SeededStore([user(T0 - timedelta(days=3)), scheduled("aria", newest)])
-    decision = run(CadenceGate(cadence_of).check(plan(), events, T0))
+    decision = run(CadenceGate(cadence_of, max_sleep=None).check(plan(), events, T0))
     assert not decision.allowed
     assert decision.retry_at == newest + timedelta(days=60)
 
@@ -441,6 +445,75 @@ def test_cadence_delivery_hours_require_a_clock():
     )
     with pytest.raises(ValueError):
         run(cadence_gate("1d @ 8-11").check(plan(), events, T0))
+
+
+def test_cadence_denial_horizons_are_bounded_so_a_reply_can_land():
+    """the pulse sleeps on a persisted denial horizon without consulting
+    events: an unbounded sixty-day horizon would sleep through the reply
+    that resets the ladder. the default bound turns it into six-hourly
+    rechecks - one event read each, zero tokens."""
+    newest = T0 - timedelta(days=2)
+    events = SeededStore([user(T0 - timedelta(days=3)), scheduled("aria", newest)])
+    decision = run(CadenceGate(Cadence.parse("60d")).check(plan(), events, T0))
+    assert not decision.allowed
+    assert decision.retry_at == T0 + timedelta(hours=6)
+    tighter = CadenceGate(Cadence.parse("60d"), max_sleep=timedelta(hours=1))
+    assert run(tighter.check(plan(), events, T0)).retry_at == T0 + timedelta(hours=1)
+
+
+def test_cadence_saturated_window_exhausts_a_capped_ladder():
+    """window full, no user message in it: the true unanswered count is only
+    bounded below. a truncated count must never re-arm rungs the chain
+    already spent - here two countable proactive sends hide behind two
+    agent conversation rows, and the capped ladder reads as exhausted."""
+    rows = [user(T0 - timedelta(days=30))]
+    for days_ago in (20, 18, 16, 14, 12, 10):
+        rows.append(scheduled("aria", T0 - timedelta(days=days_ago)))
+    rows.append(("agent", "aria", "conversation", T0 - timedelta(days=9)))
+    rows.append(("agent", "aria", "conversation", T0 - timedelta(days=8)))
+    events = SeededStore(rows)
+    gate = cadence_gate("1d x3", window=4)  # limit=max(4, 3+1): reads 4 rows
+    decision = run(gate.check(plan(), events, T0))
+    assert not decision.allowed
+    assert "exhausted" in decision.reason
+
+
+def test_cadence_saturated_window_floors_an_open_ladder():
+    """same saturation, open ladder: the count reads as past every counted
+    rung, so the chain waits the floor instead of re-running the dailies."""
+    rows = [user(T0 - timedelta(days=30))]
+    for days_ago in (20, 18, 16, 14, 12, 10):
+        rows.append(scheduled("aria", T0 - timedelta(days=days_ago)))
+    rows.append(("agent", "aria", "conversation", T0 - timedelta(days=9)))
+    rows.append(("agent", "aria", "conversation", T0 - timedelta(days=8)))
+    events = SeededStore(rows)
+    gate = cadence_gate("1h x3, 60d", window=4)
+    decision = run(gate.check(plan(), events, T0))
+    assert not decision.allowed  # 1h passed long ago; the floor has not
+    assert "cadence" in decision.reason
+
+
+def test_cadence_dst_fall_back_orders_by_instant_not_wall_clock():
+    """the repeated hour: 08:30 utc on fall-back day is 1:30 MST, AFTER
+    1:45 MDT (07:45 utc) by instant but BEFORE it by wall clock. same-zone
+    aware comparison uses the wall clock (PEP 495), which denied this
+    firing with a horizon already in the past."""
+
+    async def tz_denver(stream_id):
+        return "America/Denver"
+
+    newest = datetime(2026, 10, 31, 7, 45, tzinfo=timezone.utc)
+    events = SeededStore(
+        [
+            user(datetime(2026, 10, 30, 7, 0, tzinfo=timezone.utc)),
+            scheduled("aria", newest),
+        ]
+    )
+    gate = cadence_gate("1d @ 1-3", tz_of=tz_denver)
+    # retry_at = newest + 1d = nov 1 07:45 utc = 1:45 MDT, inside 1-3 local;
+    # now = 08:30 utc = 1:30 MST - a LATER instant in the same wall hour
+    at = datetime(2026, 11, 1, 8, 30, tzinfo=timezone.utc)
+    assert run(gate.check(plan(), events, at)).allowed
 
 
 def test_cadence_fails_closed_on_an_unresolvable_timezone(caplog):
