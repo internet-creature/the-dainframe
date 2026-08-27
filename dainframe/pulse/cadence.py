@@ -37,8 +37,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Optional, Union
 from zoneinfo import ZoneInfo
 
-from dainframe.core.events import EventQuery, EventReader
-from dainframe.pulse.gates import _unanswered_proactive
+from dainframe.core.events import Event, EventQuery, EventReader
 from dainframe.pulse.rhythms import as_utc
 from dainframe.pulse.types import FiringPlan, GateDecision
 
@@ -190,15 +189,51 @@ def _render_duration(delta: timedelta) -> str:
 CadenceOf = Union[Cadence, Callable[[str], Awaitable[Cadence]]]
 
 
+def _unanswered_since_presence(
+    events: list[Event],
+    proactive_message_type: str,
+    presence_kinds: frozenset[str],
+) -> list[Event]:
+    """agent proactive messages after the newest user-authored presence
+    event, oldest -> newest. presence is any user event whose kind is in
+    `presence_kinds` - a reply, but also (where the app opts in) a
+    non-speech showing-up like an action event. nothing user-authored in
+    the window means the whole window counts (nothing has reset the
+    chain)."""
+    last_presence = -1
+    for i, event in enumerate(events):
+        if event.author_type == "user" and event.kind in presence_kinds:
+            last_presence = i
+    return [
+        event
+        for event in events[last_presence + 1 :]
+        if event.kind == "message"
+        and event.author_type == "agent"
+        and event.message_type == proactive_message_type
+    ]
+
+
 class CadenceGate:
     """the re-engagement guard: unanswered outreach climbs the ladder
     instead of doubling toward a cap.
 
+    this gate licenses INITIATED moments - "may something fire at this
+    stream now?" - and nothing else: what fires, and what form it takes,
+    is the stimulus factory's business downstream. ambient presence (a
+    companion simply being there) is a state, not a firing, and is never
+    gated.
+
     `cadence` is a Cadence for the whole fleet, or an async callable
     `(stream_id) -> Cadence` when specs are per-stream (a user override
-    stored by the app). the unanswered count is the same event-log
-    arithmetic as the backoff gate, so any user message anywhere resets
-    the ladder; delivery hours need `tz_of`, and an unresolvable timezone
+    stored by the app). the ladder resets on any user-authored event
+    whose kind is in `presence_kinds` - by default only messages (the
+    backoff gate's chat-shaped arithmetic), but an app whose users show
+    up by DOING things (banking a focus block on a desktop) should widen
+    it to the kinds it records for those, or the ladder keeps talking to
+    someone who is already here. the proactive COUNT stays messages-only
+    either way - an action cannot be "unanswered".
+
+    delivery hours need `tz_of`, and an unresolvable timezone
     fails closed exactly like the quiet-hours gate - not knowing what time
     it is for the stream is a reason to stay silent, never to guess.
 
@@ -225,12 +260,14 @@ class CadenceGate:
         window: int = 100,
         tz_of: Optional[Callable[[str], Awaitable[str]]] = None,
         max_sleep: Optional[timedelta] = timedelta(hours=6),
+        presence_kinds: frozenset[str] = frozenset({"message"}),
     ):
         self.cadence = cadence
         self.proactive_message_type = proactive_message_type
         self.window = window
         self.tz_of = tz_of
         self.max_sleep = max_sleep
+        self.presence_kinds = presence_kinds
 
     def _bounded(self, horizon: datetime, now: datetime) -> datetime:
         if self.max_sleep is None:
@@ -248,15 +285,22 @@ class CadenceGate:
         spec = await self._resolve(firing.key.stream_id)
         limit = max(self.window, spec.finite_tries + 1)
         window = await events.read(
-            EventQuery(kinds=frozenset({"message"}), message_limit=limit)
+            EventQuery(
+                kinds=frozenset({"message"}) | self.presence_kinds,
+                message_limit=limit,
+            )
         )
-        unanswered = _unanswered_proactive(window, self.proactive_message_type)
+        unanswered = _unanswered_since_presence(
+            window, self.proactive_message_type, self.presence_kinds
+        )
         if not unanswered:
             return GateDecision(True, "clear")
 
         n = len(unanswered)
-        saturated = len(window) == limit and not any(
-            e.author_type == "user" for e in window
+        # message_limit windows on MESSAGES - presence events ride along
+        # without consuming slots - so saturation must count messages too
+        saturated = sum(1 for e in window if e.kind == "message") == limit and not any(
+            e.author_type == "user" and e.kind in self.presence_kinds for e in window
         )
         if saturated:
             # the true count is only bounded below - read it as past every

@@ -39,19 +39,22 @@ def plan(actor="aria"):
 
 
 class SeededStore:
-    """an event store seeded with (author_type, author, message_type, at)."""
+    """an event store seeded with (author_type, author, message_type, at)
+    rows; an optional fifth element names a non-message kind (an action)."""
 
     def __init__(self, rows):
         self._clock_value = None
         self.store = InMemoryEventStore(clock=lambda: self._clock_value)
-        for author_type, author, message_type, at in rows:
+        for row in rows:
+            author_type, author, message_type, at = row[:4]
+            kind = row[4] if len(row) > 4 else "message"
             self._clock_value = at
             run(
                 self.store.append(
                     NewEvent(
                         author_type=author_type,
                         author=author,
-                        kind="message",
+                        kind=kind,
                         content="x",
                         message_type=message_type,
                     )
@@ -68,6 +71,11 @@ def scheduled(author, at):
 
 def user(at):
     return ("user", "user", "conversation", at)
+
+
+def banked(at):
+    """a user-authored action event: showing up by doing, not saying."""
+    return ("user", "user", None, at, "action")
 
 
 # --- backoff ---------------------------------------------------------------
@@ -491,6 +499,72 @@ def test_cadence_saturated_window_floors_an_open_ladder():
     decision = run(gate.check(plan(), events, T0))
     assert not decision.allowed  # 1h passed long ago; the floor has not
     assert "cadence" in decision.reason
+
+
+def test_cadence_default_reset_is_chat_shaped():
+    """without opting in, only user MESSAGES reset: a user action after the
+    unanswered outreach changes nothing, and the first rung still holds."""
+    newest = T0 - timedelta(hours=4)
+    events = SeededStore(
+        [
+            user(T0 - timedelta(days=1)),
+            scheduled("aria", newest),
+            banked(T0 - timedelta(hours=1)),
+        ]
+    )
+    decision = run(cadence_gate().check(plan(), events, T0))
+    assert not decision.allowed
+    assert decision.retry_at == newest + timedelta(days=1)
+
+
+def test_cadence_presence_kinds_let_showing_up_reset_the_ladder():
+    """the desktop seam: with presence_kinds widened, banking a block counts
+    as 'they showed up' - the ladder must not keep talking to someone who
+    is already here."""
+    events = SeededStore(
+        [
+            user(T0 - timedelta(days=1)),
+            scheduled("aria", T0 - timedelta(hours=4)),
+            banked(T0 - timedelta(hours=1)),
+        ]
+    )
+    gate = cadence_gate(presence_kinds=frozenset({"message", "action"}))
+    assert run(gate.check(plan(), events, T0)).allowed
+
+
+def test_cadence_presence_older_than_the_outreach_does_not_reset():
+    newest = T0 - timedelta(hours=4)
+    events = SeededStore(
+        [
+            user(T0 - timedelta(days=1)),
+            banked(T0 - timedelta(hours=6)),
+            scheduled("aria", newest),
+        ]
+    )
+    gate = cadence_gate(presence_kinds=frozenset({"message", "action"}))
+    decision = run(gate.check(plan(), events, T0))
+    assert not decision.allowed
+    assert decision.retry_at == newest + timedelta(days=1)
+
+
+def test_cadence_saturation_counts_messages_not_riding_actions():
+    """widened kinds make AGENT action events ride along in the window
+    (they never reset - presence is user-authored). they must not inflate
+    the saturation arithmetic either: the window below is message-saturated
+    with no user presence, so the capped ladder still reads as exhausted."""
+    rows = [user(T0 - timedelta(days=30))]
+    for days_ago in (20, 18, 16, 14, 12, 10):
+        rows.append(scheduled("aria", T0 - timedelta(days=days_ago)))
+    rows.append(("agent", "aria", "conversation", T0 - timedelta(days=9)))
+    rows.append(("agent", "aria", None, T0 - timedelta(days=8, hours=12), "action"))
+    rows.append(("agent", "aria", "conversation", T0 - timedelta(days=8)))
+    events = SeededStore(rows)
+    gate = cadence_gate(
+        "1d x3", window=4, presence_kinds=frozenset({"message", "action"})
+    )
+    decision = run(gate.check(plan(), events, T0))
+    assert not decision.allowed
+    assert "exhausted" in decision.reason
 
 
 def test_cadence_dst_fall_back_orders_by_instant_not_wall_clock():

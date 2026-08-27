@@ -811,7 +811,17 @@ with the dainframe:
   silence-until-they-speak, the old cap shape. `cadence` may be a per-stream
   async callable, which is the seam for user overrides ("hold me at monthly"
   is just a stored one-rung spec). everything derives from the event log:
-  any user message resets the ladder. two honesty rules keep the arithmetic
+  any user-authored event whose kind is in `presence_kinds` resets the
+  ladder — by default only messages, but an app whose users show up by
+  doing things rather than saying things (a desktop companion) should
+  widen it to the kinds it records for those actions, or the ladder keeps
+  escalating at someone who is already here. and one boundary the gate
+  never crosses: it licenses **initiated moments** — "may something fire
+  at this stream now?" — while what fires, and what form it takes (a
+  generated message, an authored line, a pose, nothing at all), belongs
+  to the stimulus factory downstream. ambient presence — a companion
+  simply being there — is a state, not a firing, and is never gated.
+  two honesty rules keep the arithmetic
   safe at the edges: denial horizons are bounded by `max_sleep` (default six
   hours), because the pulse sleeps on a persisted horizon without consulting
   events — the long floor becomes cheap periodic rechecks so a reply or a
