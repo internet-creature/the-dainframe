@@ -6,6 +6,7 @@ persona, its prompt construction, its model, its tools. silent evaluators and
 chatty personas fit the same interface; whether silence is correct is the
 ScriptLine's response policy, not the agent's problem (§5.2).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -75,9 +76,7 @@ class BriefingContext:
 
 @runtime_checkable
 class ContextProvider(Protocol):
-    async def enrich(
-        self, stimulus: Stimulus, line: ScriptLine
-    ) -> BriefingContext: ...
+    async def enrich(self, stimulus: Stimulus, line: ScriptLine) -> BriefingContext: ...
 
 
 class NullContextProvider:

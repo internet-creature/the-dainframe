@@ -5,6 +5,7 @@ engine's only guardrail is that unknown speakers become structured failed
 LineResults - a typo in the only speaker must not resemble a successful quiet
 activation.
 """
+
 from __future__ import annotations
 
 from typing import Protocol, runtime_checkable

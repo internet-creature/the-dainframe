@@ -6,6 +6,7 @@ sees or chooses whose stream it acts on or which actor it is, which matters
 the moment there's more than one user/session/agent. new capabilities register
 here with zero changes to the agent loop.
 """
+
 from __future__ import annotations
 
 import logging

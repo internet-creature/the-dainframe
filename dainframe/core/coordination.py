@@ -9,6 +9,7 @@ the in-process default makes the safe local behavior the easy behavior.
 multi-process apps supply a distributed lease or optimistic versioned
 implementation behind the same protocol.
 """
+
 from __future__ import annotations
 
 import asyncio

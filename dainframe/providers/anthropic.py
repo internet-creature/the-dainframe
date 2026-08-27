@@ -92,7 +92,11 @@ class AnthropicProvider(BaseAIProvider):
 
     def _render_tools(self, tools) -> list[dict]:
         return [
-            {"name": t.name, "description": t.description, "input_schema": t.input_schema}
+            {
+                "name": t.name,
+                "description": t.description,
+                "input_schema": t.input_schema,
+            }
             for t in tools
         ]
 
@@ -120,14 +124,18 @@ class AnthropicProvider(BaseAIProvider):
 
             # plain text turn; wrap in a block if it's a cache breakpoint
             if turn.cache:
-                rendered.append({
-                    "role": turn.role,
-                    "content": [{
-                        "type": "text",
-                        "text": turn.content or "",
-                        "cache_control": {"type": "ephemeral"},
-                    }],
-                })
+                rendered.append(
+                    {
+                        "role": turn.role,
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": turn.content or "",
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
+                    }
+                )
             else:
                 rendered.append({"role": turn.role, "content": turn.content or ""})
         return rendered
@@ -141,7 +149,9 @@ class AnthropicProvider(BaseAIProvider):
             if block.type == "text":
                 text_parts.append(block.text)
             elif block.type == "tool_use":
-                tool_calls.append(ToolCall(id=block.id, name=block.name, input=block.input))
+                tool_calls.append(
+                    ToolCall(id=block.id, name=block.name, input=block.input)
+                )
 
         text = "".join(text_parts).strip() or None
         if response.stop_reason == "refusal":
@@ -150,8 +160,10 @@ class AnthropicProvider(BaseAIProvider):
         usage = Usage(
             input_tokens=getattr(response.usage, "input_tokens", 0) or 0,
             output_tokens=getattr(response.usage, "output_tokens", 0) or 0,
-            cache_read_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
-            cache_write_tokens=getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
+            cache_read_tokens=getattr(response.usage, "cache_read_input_tokens", 0)
+            or 0,
+            cache_write_tokens=getattr(response.usage, "cache_creation_input_tokens", 0)
+            or 0,
         )
 
         assistant_turn = ChatTurn(

@@ -9,23 +9,27 @@ from dainframe.core.types import Script, ScriptLine, ScriptValidationError
 
 
 def test_legal_combinations_construct():
-    Script(lines=(
-        ScriptLine(speaker="a", response="required", delivery="direct"),
-        ScriptLine(speaker="b", response="required", delivery="pending"),
-    ))
-    Script(lines=(
-        ScriptLine(speaker="c", response="optional", delivery="direct"),
-        ScriptLine(speaker="d", response="optional", delivery="pending"),
-        ScriptLine(speaker="e", response="silent", delivery="none"),
-    ))
+    Script(
+        lines=(
+            ScriptLine(speaker="a", response="required", delivery="direct"),
+            ScriptLine(speaker="b", response="required", delivery="pending"),
+        )
+    )
+    Script(
+        lines=(
+            ScriptLine(speaker="c", response="optional", delivery="direct"),
+            ScriptLine(speaker="d", response="optional", delivery="pending"),
+            ScriptLine(speaker="e", response="silent", delivery="none"),
+        )
+    )
 
 
 @pytest.mark.parametrize(
     ("response", "delivery"),
     [
-        ("silent", "direct"),    # silent text has nowhere legitimate to go
+        ("silent", "direct"),  # silent text has nowhere legitimate to go
         ("silent", "pending"),
-        ("required", "none"),    # required text must say where it goes
+        ("required", "none"),  # required text must say where it goes
         ("optional", "none"),
     ],
 )

@@ -5,6 +5,7 @@ methods through the subclass. locks down: ordering, unique immutable ids,
 visibility-BEFORE-windowing, message-count windows that carry intervening
 non-message events, and latest-query behavior.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -90,13 +91,17 @@ class EventStoreContract:
 
             store = self.make_store(visibility=policy)
             await store.append(_msg("user", "candidate", "answer 1"))
-            await store.append(_msg("agent", "scorer", "private note", audience="scorers"))
+            await store.append(
+                _msg("agent", "scorer", "private note", audience="scorers")
+            )
             await store.append(_msg("agent", "interviewer", "follow-up"))
             visible = await store.read(EventQuery(viewer="candidate", message_limit=2))
             assert [e.content for e in visible] == ["answer 1", "follow-up"]
             unfiltered = await store.read(EventQuery(viewer="scorer", message_limit=3))
             assert [e.content for e in unfiltered] == [
-                "answer 1", "private note", "follow-up",
+                "answer 1",
+                "private note",
+                "follow-up",
             ]
 
         asyncio.run(_run())
@@ -117,7 +122,9 @@ class EventStoreContract:
             )
             assert latest_user is not None and latest_user.content == "hello"
             # a trailing action never masquerades as "the assistant replied"
-            latest_message = await store.latest(EventQuery(kinds=frozenset({"message"})))
+            latest_message = await store.latest(
+                EventQuery(kinds=frozenset({"message"}))
+            )
             assert latest_message is not None and latest_message.content == "hi!"
 
         asyncio.run(_run())

@@ -11,6 +11,7 @@ only the engine holds append access; directors, gates, and deciders receive
 an EventReader projection. that keeps "one recording discipline" enforceable
 instead of merely conventional.
 """
+
 from __future__ import annotations
 
 import itertools
@@ -28,16 +29,18 @@ class Event:
     """one recorded moment in a stream. stream-scoped: the store it came from
     names the stream, so the event itself doesn't repeat it."""
 
-    event_id: str          # opaque, hashable, unique within the stream
-    author_type: str       # 'user' | 'agent' | 'system'
-    author: str            # 'user', an agent name, ...
-    kind: str              # 'message' | 'action' | 'note'
+    event_id: str  # opaque, hashable, unique within the stream
+    author_type: str  # 'user' | 'agent' | 'system'
+    author: str  # 'user', an agent name, ...
+    kind: str  # 'message' | 'action' | 'note'
     content: str
     created_at: datetime
-    message_type: Optional[str] = None    # messages only ('conversation', 'scheduled', ...)
-    platform: Optional[str] = None        # provenance - never a filter key by default
+    message_type: Optional[str] = (
+        None  # messages only ('conversation', 'scheduled', ...)
+    )
+    platform: Optional[str] = None  # provenance - never a filter key by default
     scope: Optional[str] = None
-    audience: Optional[str] = None        # which private channel this belongs to
+    audience: Optional[str] = None  # which private channel this belongs to
     metadata: Mapping[str, object] = field(default_factory=dict)
 
 
@@ -147,13 +150,11 @@ class InMemoryEventStore:
             return filtered
         # window on the last N MESSAGE events; non-message events inside that
         # id-ordered window ride along.
-        message_positions = [
-            i for i, e in enumerate(filtered) if e.kind == "message"
-        ]
+        message_positions = [i for i, e in enumerate(filtered) if e.kind == "message"]
         if not message_positions:
             return []
-        window = message_positions[-query.message_limit:]
-        return filtered[window[0]:]
+        window = message_positions[-query.message_limit :]
+        return filtered[window[0] :]
 
     async def latest(self, query: EventQuery) -> Optional[Event]:
         filtered = self._filtered(query)
@@ -171,8 +172,5 @@ class InMemoryEventStore:
             if (query.kinds is None or e.kind in query.kinds)
             and (query.author_types is None or e.author_type in query.author_types)
             and (query.authors is None or e.author in query.authors)
-            and (
-                query.message_types is None
-                or e.message_type in query.message_types
-            )
+            and (query.message_types is None or e.message_type in query.message_types)
         ]

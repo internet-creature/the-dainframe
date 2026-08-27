@@ -267,10 +267,10 @@ def test_executed_actions_carry_policy_and_order():
     ]
     assert result.actions[0].result_content == "saved"
     assert result.actions[0].terminal is True
-    assert result.actions[0].record_event is True     # a mutation: persisted
+    assert result.actions[0].record_event is True  # a mutation: persisted
     assert result.actions[1].result_content == "found: user likes tea"
     assert result.actions[1].terminal is False
-    assert result.actions[1].record_event is False    # a pure read: not persisted
+    assert result.actions[1].record_event is False  # a pure read: not persisted
     assert all(a.is_error is False for a in result.actions)
 
 
@@ -322,10 +322,8 @@ def test_provider_failure_after_tools_carries_partial_actions():
         run(loop.run(_request(), context=CTX, turn_kind="conversation"))
 
     err = exc_info.value
-    assert calls == [("save_memory", {"instruction": "x"})]     # it really ran
-    assert [(a.name, a.record_event) for a in err.actions] == [
-        ("save_memory", True)
-    ]
+    assert calls == [("save_memory", {"instruction": "x"})]  # it really ran
+    assert [(a.name, a.record_event) for a in err.actions] == [("save_memory", True)]
     assert err.retryable is True
     # still a ProviderError, so existing catch blocks keep working
     assert isinstance(err, ProviderError)
@@ -361,7 +359,9 @@ def test_usage_events_carry_actor_and_response_model():
     loop = AgentLoop(provider, reg, "fake", usage_sink=sink)
 
     ctx = ToolContext(stream_id="u", activation_id="act-9", actor="tempo")
-    run(loop.run(_request(), context=ctx, platform="telegram", turn_kind="conversation"))
+    run(
+        loop.run(_request(), context=ctx, platform="telegram", turn_kind="conversation")
+    )
 
     call_event, trace_event = sink.events
     assert call_event.actor == "tempo"
@@ -393,14 +393,17 @@ def test_empty_max_tokens_response_retries_once_with_doubled_budget():
     text. the loop must retry once with the ceiling doubled instead of handing
     the caller a silent turn."""
     reg = ToolRegistry()
-    provider = ScriptedProvider([
-        _resp(None, stop_reason="max_tokens"),
-        _resp("okay here's my actual reply!"),
-    ])
+    provider = ScriptedProvider(
+        [
+            _resp(None, stop_reason="max_tokens"),
+            _resp("okay here's my actual reply!"),
+        ]
+    )
     request = _request()
     before = request.max_tokens
-    result = run(_loop(provider, reg).run(
-        request, context=CTX, turn_kind="conversation"))
+    result = run(
+        _loop(provider, reg).run(request, context=CTX, turn_kind="conversation")
+    )
 
     assert provider.calls == 2
     assert request.max_tokens == before * 2
@@ -409,15 +412,18 @@ def test_empty_max_tokens_response_retries_once_with_doubled_budget():
 
 def test_empty_max_tokens_retries_exactly_once():
     reg = ToolRegistry()
-    provider = ScriptedProvider([
-        _resp(None, stop_reason="max_tokens"),
-        _resp(None, stop_reason="max_tokens"),
-    ])
-    result = run(_loop(provider, reg).run(
-        _request(), context=CTX, turn_kind="conversation"))
+    provider = ScriptedProvider(
+        [
+            _resp(None, stop_reason="max_tokens"),
+            _resp(None, stop_reason="max_tokens"),
+        ]
+    )
+    result = run(
+        _loop(provider, reg).run(_request(), context=CTX, turn_kind="conversation")
+    )
 
-    assert provider.calls == 2          # one retry, never a loop
-    assert not result.text              # still empty - the caller's job now
+    assert provider.calls == 2  # one retry, never a loop
+    assert not result.text  # still empty - the caller's job now
 
 
 def test_empty_end_turn_response_is_not_retried():
@@ -425,7 +431,8 @@ def test_empty_end_turn_response_is_not_retried():
     call - the retry is targeted, not a blanket second chance."""
     reg = ToolRegistry()
     provider = ScriptedProvider([_resp(None, stop_reason="end_turn")])
-    result = run(_loop(provider, reg).run(
-        _request(), context=CTX, turn_kind="conversation"))
+    result = run(
+        _loop(provider, reg).run(_request(), context=CTX, turn_kind="conversation")
+    )
     assert provider.calls == 1
     assert not result.text

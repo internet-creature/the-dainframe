@@ -4,6 +4,7 @@ every hook call is isolated: its exception is logged and never changes the
 activation result or prevents later hooks. chordial's platform-switch
 courtesy and completion reconciler live behind these.
 """
+
 from __future__ import annotations
 
 import logging
