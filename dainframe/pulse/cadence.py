@@ -37,7 +37,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Optional, Union
 from zoneinfo import ZoneInfo
 
-from dainframe.core.events import Event, EventQuery, EventReader
+from dainframe.core.events import EventQuery, EventReader
 from dainframe.pulse.rhythms import as_utc
 from dainframe.pulse.types import FiringPlan, GateDecision
 
@@ -189,30 +189,6 @@ def _render_duration(delta: timedelta) -> str:
 CadenceOf = Union[Cadence, Callable[[str], Awaitable[Cadence]]]
 
 
-def _unanswered_since_presence(
-    events: list[Event],
-    proactive_message_type: str,
-    presence_kinds: frozenset[str],
-) -> list[Event]:
-    """agent proactive messages after the newest user-authored presence
-    event, oldest -> newest. presence is any user event whose kind is in
-    `presence_kinds` - a reply, but also (where the app opts in) a
-    non-speech showing-up like an action event. nothing user-authored in
-    the window means the whole window counts (nothing has reset the
-    chain)."""
-    last_presence = -1
-    for i, event in enumerate(events):
-        if event.author_type == "user" and event.kind in presence_kinds:
-            last_presence = i
-    return [
-        event
-        for event in events[last_presence + 1 :]
-        if event.kind == "message"
-        and event.author_type == "agent"
-        and event.message_type == proactive_message_type
-    ]
-
-
 class CadenceGate:
     """the re-engagement guard: unanswered outreach climbs the ladder
     instead of doubling toward a cap.
@@ -246,25 +222,27 @@ class CadenceGate:
     or a new spec takes hold within one `max_sleep`. None disables the
     bound; only safe with a store that invalidates horizons on events.
 
-    the event read is never narrower than the ladder: the query limit is
-    at least `finite_tries + 1`, and a window that comes back saturated
-    with no user message in it reads as "past every counted rung" - which
-    exhausts a capped ladder and floors an open one, instead of a
-    truncated count re-arming rungs the chain already spent."""
+    the arithmetic reads exactly what the ladder needs, never a history
+    window: the newest `finite_tries + 1` PROACTIVE messages (any deeper
+    count is indistinguishable from "past every counted rung", so a
+    capped ladder exhausts and an open one floors instead of a truncated
+    count re-arming spent rungs - and ordinary agent conversation is
+    never mistaken for outreach) against the newest user presence
+    INSTANT, maxed by time rather than by insertion order (a backfilled
+    event - a device syncing history - carries its honest timestamp and
+    cannot reset a chain newer than the moment it records)."""
 
     def __init__(
         self,
         cadence: CadenceOf,
         *,
         proactive_message_type: str = "scheduled",
-        window: int = 100,
         tz_of: Optional[Callable[[str], Awaitable[str]]] = None,
         max_sleep: Optional[timedelta] = timedelta(hours=6),
         presence_kinds: frozenset[str] = frozenset({"message"}),
     ):
         self.cadence = cadence
         self.proactive_message_type = proactive_message_type
-        self.window = window
         self.tz_of = tz_of
         self.max_sleep = max_sleep
         self.presence_kinds = presence_kinds
@@ -283,34 +261,36 @@ class CadenceGate:
         self, firing: FiringPlan, events: EventReader, now: datetime
     ) -> GateDecision:
         spec = await self._resolve(firing.key.stream_id)
-        limit = max(self.window, spec.finite_tries + 1)
-        window = await events.read(
+        # two reads, each exactly as deep as its question. the proactive
+        # read is capped at finite_tries + 1 because a deeper count is
+        # indistinguishable from "past every counted rung"; the presence
+        # read is every user event of the presence kinds, reduced to its
+        # newest INSTANT - by created_at, never by insertion order, so a
+        # backfilled row cannot masquerade as newer than it is
+        proactive = await events.read(
             EventQuery(
-                kinds=frozenset({"message"}) | self.presence_kinds,
-                message_limit=limit,
+                kinds=frozenset({"message"}),
+                author_types=frozenset({"agent"}),
+                message_types=frozenset({self.proactive_message_type}),
+                message_limit=spec.finite_tries + 1,
             )
         )
-        unanswered = _unanswered_since_presence(
-            window, self.proactive_message_type, self.presence_kinds
+        presence = await events.read(
+            EventQuery(kinds=self.presence_kinds, author_types=frozenset({"user"}))
         )
+        cutoff = max((as_utc(e.created_at) for e in presence), default=None)
+        unanswered = [
+            e for e in proactive if cutoff is None or as_utc(e.created_at) > cutoff
+        ]
         if not unanswered:
             return GateDecision(True, "clear")
 
         n = len(unanswered)
-        # message_limit windows on MESSAGES - presence events ride along
-        # without consuming slots - so saturation must count messages too
-        saturated = sum(1 for e in window if e.kind == "message") == limit and not any(
-            e.author_type == "user" and e.kind in self.presence_kinds for e in window
-        )
-        if saturated:
-            # the true count is only bounded below - read it as past every
-            # counted rung: a capped ladder exhausts, an open one floors
-            n = max(n, spec.finite_tries + 1)
         wait = spec.wait_for(n)
         if wait is None:
             return GateDecision(False, "cadence exhausted: quiet until they speak")
 
-        newest = as_utc(unanswered[-1].created_at)
+        newest = max(as_utc(e.created_at) for e in unanswered)
         retry_at = newest + wait
         zone = None
         landing = ""

@@ -469,36 +469,64 @@ def test_cadence_denial_horizons_are_bounded_so_a_reply_can_land():
     assert run(tighter.check(plan(), events, T0)).retry_at == T0 + timedelta(hours=1)
 
 
-def test_cadence_saturated_window_exhausts_a_capped_ladder():
-    """window full, no user message in it: the true unanswered count is only
-    bounded below. a truncated count must never re-arm rungs the chain
-    already spent - here two countable proactive sends hide behind two
-    agent conversation rows, and the capped ladder reads as exhausted."""
+def test_cadence_deep_chain_still_exhausts_a_capped_ladder():
+    """six unanswered proactive sends against a three-try ladder: the read
+    caps at finite_tries + 1 (a deeper count is indistinguishable from
+    'past every counted rung'), and the capped ladder reads as exhausted -
+    a truncated count must never re-arm rungs the chain already spent."""
     rows = [user(T0 - timedelta(days=30))]
     for days_ago in (20, 18, 16, 14, 12, 10):
         rows.append(scheduled("aria", T0 - timedelta(days=days_ago)))
-    rows.append(("agent", "aria", "conversation", T0 - timedelta(days=9)))
-    rows.append(("agent", "aria", "conversation", T0 - timedelta(days=8)))
     events = SeededStore(rows)
-    gate = cadence_gate("1d x3", window=4)  # limit=max(4, 3+1): reads 4 rows
-    decision = run(gate.check(plan(), events, T0))
+    decision = run(cadence_gate("1d x3").check(plan(), events, T0))
     assert not decision.allowed
     assert "exhausted" in decision.reason
 
 
-def test_cadence_saturated_window_floors_an_open_ladder():
-    """same saturation, open ladder: the count reads as past every counted
-    rung, so the chain waits the floor instead of re-running the dailies."""
+def test_cadence_deep_chain_floors_an_open_ladder():
+    """same depth, open ladder: past every counted rung means the chain
+    waits the floor instead of re-running the dailies."""
     rows = [user(T0 - timedelta(days=30))]
     for days_ago in (20, 18, 16, 14, 12, 10):
         rows.append(scheduled("aria", T0 - timedelta(days=days_ago)))
-    rows.append(("agent", "aria", "conversation", T0 - timedelta(days=9)))
-    rows.append(("agent", "aria", "conversation", T0 - timedelta(days=8)))
     events = SeededStore(rows)
-    gate = cadence_gate("1h x3, 60d", window=4)
-    decision = run(gate.check(plan(), events, T0))
+    decision = run(cadence_gate("1h x3, 60d").check(plan(), events, T0))
     assert not decision.allowed  # 1h passed long ago; the floor has not
-    assert "cadence" in decision.reason
+    assert decision.retry_at == T0 - timedelta(days=10) + timedelta(days=60)
+
+
+def test_cadence_agent_chatter_is_not_outreach():
+    """one unanswered outreach buried under ordinary agent conversation:
+    only proactive messages count, so the chain sits on the FIRST rung -
+    chatter must never manufacture exhaustion (sol's repro: 1 scheduled +
+    3 conversation rows once read as 'cadence exhausted' under 1d x3)."""
+    newest = T0 - timedelta(hours=4)
+    rows = [user(T0 - timedelta(days=2)), scheduled("aria", newest)]
+    for hours_ago in (3, 2, 1):
+        rows.append(("agent", "aria", "conversation", T0 - timedelta(hours=hours_ago)))
+    events = SeededStore(rows)
+    decision = run(cadence_gate("1d x3").check(plan(), events, T0))
+    assert not decision.allowed
+    assert "exhausted" not in decision.reason
+    assert decision.retry_at == newest + timedelta(days=1)
+
+
+def test_cadence_backfilled_presence_does_not_reset_a_newer_chain():
+    """presence is ordered by TIME, not by insertion: an action row that
+    arrives late carrying an old timestamp (a device syncing history) must
+    not reset outreach sent after the moment it records."""
+    newest = T0 - timedelta(hours=4)
+    events = SeededStore(
+        [
+            user(T0 - timedelta(days=2)),
+            scheduled("aria", newest),
+            banked(T0 - timedelta(days=3)),  # appended last, happened first
+        ]
+    )
+    gate = cadence_gate(presence_kinds=frozenset({"message", "action"}))
+    decision = run(gate.check(plan(), events, T0))
+    assert not decision.allowed
+    assert decision.retry_at == newest + timedelta(days=1)
 
 
 def test_cadence_default_reset_is_chat_shaped():
@@ -547,21 +575,16 @@ def test_cadence_presence_older_than_the_outreach_does_not_reset():
     assert decision.retry_at == newest + timedelta(days=1)
 
 
-def test_cadence_saturation_counts_messages_not_riding_actions():
-    """widened kinds make AGENT action events ride along in the window
-    (they never reset - presence is user-authored). they must not inflate
-    the saturation arithmetic either: the window below is message-saturated
-    with no user presence, so the capped ladder still reads as exhausted."""
+def test_cadence_agent_actions_are_never_presence():
+    """widened kinds describe the USER's ways of showing up: an agent's own
+    action event (a tool call) must neither reset the chain nor count as
+    outreach - the deep chain still exhausts right through it."""
     rows = [user(T0 - timedelta(days=30))]
     for days_ago in (20, 18, 16, 14, 12, 10):
         rows.append(scheduled("aria", T0 - timedelta(days=days_ago)))
-    rows.append(("agent", "aria", "conversation", T0 - timedelta(days=9)))
-    rows.append(("agent", "aria", None, T0 - timedelta(days=8, hours=12), "action"))
-    rows.append(("agent", "aria", "conversation", T0 - timedelta(days=8)))
+    rows.append(("agent", "aria", None, T0 - timedelta(days=8), "action"))
     events = SeededStore(rows)
-    gate = cadence_gate(
-        "1d x3", window=4, presence_kinds=frozenset({"message", "action"})
-    )
+    gate = cadence_gate("1d x3", presence_kinds=frozenset({"message", "action"}))
     decision = run(gate.check(plan(), events, T0))
     assert not decision.allowed
     assert "exhausted" in decision.reason

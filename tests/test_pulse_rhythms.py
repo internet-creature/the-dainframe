@@ -89,6 +89,48 @@ def test_interval_waits_and_reports_the_exact_horizon():
     assert ev.next_check == T0 + timedelta(minutes=50)
 
 
+def test_interval_anchor_is_by_time_not_by_insertion():
+    """a backfilled event (a device syncing history) is appended last but
+    carries an old timestamp - it must not yank the recency clock backward
+    past newer real activity and fire the beat early."""
+    clock = {"at": T0 - timedelta(minutes=10)}
+    store = InMemoryEventStore(clock=lambda: clock["at"])
+    run(
+        store.append(
+            NewEvent(
+                author_type="user",
+                author="user",
+                kind="message",
+                content="hi",
+                message_type="conversation",
+            )
+        )
+    )
+    clock["at"] = T0 - timedelta(days=2)  # appended second, happened first
+    run(
+        store.append(
+            NewEvent(
+                author_type="user",
+                author="user",
+                kind="message",
+                content="backfilled",
+                message_type="conversation",
+            )
+        )
+    )
+    ev = run(
+        evaluate(
+            tagged(Interval(every=timedelta(hours=1), anchor=USER_MESSAGES)),
+            "s",
+            PulseState(),
+            store,
+            T0,
+        )
+    )
+    assert ev.decision is None  # anchored on the ten-minutes-ago message
+    assert ev.next_check == T0 + timedelta(minutes=50)
+
+
 def test_interval_with_no_anchor_at_all_is_due_now():
     """first contact: nothing to be recent to."""
     ev = run(
