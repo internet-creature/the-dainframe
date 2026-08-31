@@ -9,6 +9,7 @@ everything here is immutable: a Stimulus becomes the activation's source
 record, a Script is the Director's committed decision, and results are shared
 history's receipt.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -136,9 +137,7 @@ class Script:
 
     def __post_init__(self):
         if not self.lines and not self.noop_reason:
-            raise ScriptValidationError(
-                "an empty Script needs an explicit noop_reason"
-            )
+            raise ScriptValidationError("an empty Script needs an explicit noop_reason")
         for line in self.lines:
             if (line.response, line.delivery) not in _LEGAL_COMBOS:
                 raise ScriptValidationError(

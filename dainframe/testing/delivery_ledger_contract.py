@@ -6,6 +6,7 @@ confirmation records the exact text once, double confirmation is idempotent —
 including CONCURRENT confirmation, because idempotence is a storage property,
 not an id-format trick.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -33,7 +34,9 @@ class DeliveryLedgerContract:
             target=DeliveryTarget(platform="telegram", target_id="chat-9"),
             text=text,
             event_context=EventContext(
-                platform="telegram", scope="dm", audience="aria",
+                platform="telegram",
+                scope="dm",
+                audience="aria",
                 outbound_message_type="scheduled",
             ),
         )

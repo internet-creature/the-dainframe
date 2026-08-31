@@ -11,6 +11,7 @@ also proves two invariants the ambient design leans on: a stale
 ActivationPrecondition cancels before any model work, and a failing hook
 never touches the result.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -104,8 +105,10 @@ class CompanionAgent:
         request = AIRequest(
             system=[SystemBlock(text=f"you are {self.name}, warm and grounded")],
             messages=[
-                ChatTurn(role="user" if e.author_type == "user" else "assistant",
-                         content=e.content)
+                ChatTurn(
+                    role="user" if e.author_type == "user" else "assistant",
+                    content=e.content,
+                )
                 for e in briefing.events
                 if e.kind == "message"
             ],
@@ -147,7 +150,8 @@ def _memory_registry():
     registry.register(
         Tool(
             definition=ToolDef(
-                name="save_memory", description="save a memory",
+                name="save_memory",
+                description="save a memory",
                 input_schema={"type": "object"},
             ),
             handler=_save,
@@ -191,15 +195,20 @@ def _dm_stimulus():
 
 
 def test_dm_turn_records_inbound_action_and_confirmed_reply_in_order():
-    engine, stores, companion, deliverer, saved = _wire([
-        _resp(
-            REPLY,
-            tool_calls=[ToolCall(
-                id="t1", name="save_memory",
-                input={"instruction": "finished the parser"},
-            )],
-        ),
-    ])
+    engine, stores, companion, deliverer, saved = _wire(
+        [
+            _resp(
+                REPLY,
+                tool_calls=[
+                    ToolCall(
+                        id="t1",
+                        name="save_memory",
+                        input={"instruction": "finished the parser"},
+                    )
+                ],
+            ),
+        ]
+    )
 
     result: ActivationResult = run(engine.handle(_dm_stimulus()))
 
@@ -223,7 +232,7 @@ def test_dm_turn_records_inbound_action_and_confirmed_reply_in_order():
     ]
     assert events[0].event_id == result.inbound_event_id
     assert events[2].content == REPLY
-    assert events[2].audience == "chordial"     # the dm stays a private channel
+    assert events[2].audience == "chordial"  # the dm stays a private channel
 
     # the tool really ran, attributed to the acting persona
     assert saved == [("chordial", "finished the parser")]
@@ -244,11 +253,20 @@ def test_failed_send_keeps_actions_but_not_the_prose():
     stores = {}
     registry, saved = _memory_registry()
     loop = AgentLoop(
-        ScriptedProvider([
-            _resp(REPLY, tool_calls=[ToolCall(
-                id="t1", name="save_memory", input={"instruction": "x"})]),
-        ]),
-        registry, "fake",
+        ScriptedProvider(
+            [
+                _resp(
+                    REPLY,
+                    tool_calls=[
+                        ToolCall(
+                            id="t1", name="save_memory", input={"instruction": "x"}
+                        )
+                    ],
+                ),
+            ]
+        ),
+        registry,
+        "fake",
     )
     engine = Orchestrator(
         agents={"chordial": CompanionAgent("chordial", loop)},
@@ -263,7 +281,7 @@ def test_failed_send_keeps_actions_but_not_the_prose():
     assert line.status == "errored"
     assert line.error.kind == "delivery_failed"
     events = run(stores["user-dain"].read(EventQuery()))
-    assert [e.kind for e in events] == ["message", "action"]   # no reply event
+    assert [e.kind for e in events] == ["message", "action"]  # no reply event
     assert saved  # the save still happened and its trail survived
 
 
@@ -276,8 +294,9 @@ def test_stale_ambient_precondition_cancels_before_any_model_work():
 
         async def holds(self, events):
             latest = await events.latest(
-                EventQuery(kinds=frozenset({"message"}),
-                           author_types=frozenset({"user"}))
+                EventQuery(
+                    kinds=frozenset({"message"}), author_types=frozenset({"user"})
+                )
             )
             return latest is None
 
@@ -287,26 +306,37 @@ def test_stale_ambient_precondition_cancels_before_any_model_work():
     store = stores.setdefault(
         "user-dain", InMemoryEventStore(visibility=chordial_visibility)
     )
-    run(store.append(NewEvent(
-        author_type="user", author="user", kind="message",
-        content="hey!", message_type="conversation",
-    )))
+    run(
+        store.append(
+            NewEvent(
+                author_type="user",
+                author="user",
+                kind="message",
+                content="hey!",
+                message_type="conversation",
+            )
+        )
+    )
 
-    result = run(engine.handle(Stimulus(
-        kind="scheduled_tick",
-        stream_id="user-dain",
-        record_inbound=False,
-        platform="telegram",
-        audience="chordial",
-        addressed=("chordial",),
-        reason="quiet for a while",
-        precondition=UserStillSilent(),
-        target=DeliveryTarget(platform="telegram", target_id="chat-1"),
-    )))
+    result = run(
+        engine.handle(
+            Stimulus(
+                kind="scheduled_tick",
+                stream_id="user-dain",
+                record_inbound=False,
+                platform="telegram",
+                audience="chordial",
+                addressed=("chordial",),
+                reason="quiet for a while",
+                precondition=UserStillSilent(),
+                target=DeliveryTarget(platform="telegram", target_id="chat-1"),
+            )
+        )
+    )
 
     assert result.status == "cancelled"
     assert result.lines == ()
-    assert companion.briefings == []        # no briefing, no tokens
+    assert companion.briefings == []  # no briefing, no tokens
     assert deliverer.requests == []
 
 

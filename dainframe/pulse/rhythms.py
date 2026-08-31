@@ -255,8 +255,14 @@ async def _interval_anchor(
     interval: Interval, state: "PulseState", events: EventReader
 ) -> Optional[datetime]:
     if isinstance(interval.anchor, EventQuery):
-        latest = await events.latest(interval.anchor)
-        return as_utc(latest.created_at) if latest else None
+        # recency is by TIME, not by insertion order: latest() returns the
+        # last row appended, but a backfilled event (a device syncing
+        # history) arrives late carrying an old timestamp, and anchoring
+        # on it would yank the clock backward past newer real activity
+        matching = await events.read(interval.anchor)
+        if not matching:
+            return None
+        return max(as_utc(e.created_at) for e in matching)
     anchor = (
         state.last_delivered
         if interval.anchor == "last_delivered"

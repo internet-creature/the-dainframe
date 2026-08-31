@@ -12,6 +12,7 @@ policy exists for (§11.1). proves:
 - a silent line that unexpectedly produces text is a line error: private
   evaluator prose is never delivered or recorded (§5.2)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -53,22 +54,26 @@ class InterviewDirector:
     async def direct(self, stimulus, events):
         if stimulus.kind != "candidate_answer":
             return Script(noop_reason=f"no rule for kind '{stimulus.kind}'")
-        return Script(lines=(
-            ScriptLine(
-                speaker="interviewer",
-                cue="probe deeper on the tradeoff they just mentioned",
-                response="required",
-                delivery="direct",
-            ),
-            ScriptLine(
-                speaker="scorer",
-                response="silent",
-                delivery="none",
-                event_context=EventContext(
-                    platform="web", scope="panel", audience="panel",
+        return Script(
+            lines=(
+                ScriptLine(
+                    speaker="interviewer",
+                    cue="probe deeper on the tradeoff they just mentioned",
+                    response="required",
+                    delivery="direct",
                 ),
-            ),
-        ))
+                ScriptLine(
+                    speaker="scorer",
+                    response="silent",
+                    delivery="none",
+                    event_context=EventContext(
+                        platform="web",
+                        scope="panel",
+                        audience="panel",
+                    ),
+                ),
+            )
+        )
 
 
 class FakeInterviewer:
@@ -103,7 +108,7 @@ class FakeScorer:
     async def act(self, briefing):
         self.briefings.append(briefing)
         return AgentOutcome(
-            text=self._leak_text,   # None in the correct shape
+            text=self._leak_text,  # None in the correct shape
             actions=(_score_action("clear tradeoff articulation"),),
         )
 
@@ -171,15 +176,14 @@ def test_mixed_visible_and_silent_lines_share_one_activation():
     assert score_event.metadata["input"]["dimension"] == "reasoning"
 
     # the candidate-facing view NEVER includes scorer evidence
-    candidate_view = run(
-        stores["interview-42"].read(EventQuery(viewer="candidate"))
-    )
+    candidate_view = run(stores["interview-42"].read(EventQuery(viewer="candidate")))
     assert [e.author for e in candidate_view] == ["candidate", "interviewer"]
 
     # the scorer was briefed AFTER the interviewer's reply became history -
     # it evaluates the full exchange, not half of it
     assert [e.author for e in scorer.briefings[0].events] == [
-        "candidate", "interviewer",
+        "candidate",
+        "interviewer",
     ]
     # and the interviewer's own briefing ended on the candidate's answer,
     # carrying the director's cue
@@ -201,7 +205,7 @@ def test_silent_line_text_is_an_error_and_never_leaks():
     # the score ACTION still recorded (it's real evidence)...
     assert [a.name for a in line.actions] == ["record_score"]
     # ...but the prose reached neither the platform nor the event log
-    assert len(deliverer.requests) == 1     # only the interviewer's send
+    assert len(deliverer.requests) == 1  # only the interviewer's send
     all_content = " ".join(
         e.content for e in run(stores["interview-42"].read(EventQuery()))
     )
@@ -210,12 +214,16 @@ def test_silent_line_text_is_an_error_and_never_leaks():
 
 def test_unknown_stimulus_kind_is_an_explicit_noop():
     engine, stores, interviewer, _ = _wire(FakeScorer())
-    result = run(engine.handle(Stimulus(
-        kind="hallway_smalltalk",
-        stream_id="interview-42",
-        content="nice weather",
-        record_inbound=False,
-    )))
+    result = run(
+        engine.handle(
+            Stimulus(
+                kind="hallway_smalltalk",
+                stream_id="interview-42",
+                content="nice weather",
+                record_inbound=False,
+            )
+        )
+    )
     assert result.status == "noop"
     assert "no rule" in result.status_reason
     assert interviewer.briefings == []

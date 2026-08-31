@@ -9,6 +9,7 @@ sink failure is guarded at the call site: accounting can never break an agent
 run. `model` on ProviderCallUsage is the model the actual AIResponse reported,
 not merely a provider object's configured default (§4.8).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

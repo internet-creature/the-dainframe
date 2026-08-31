@@ -17,6 +17,7 @@ what it already enforces are the §5.6 invariants:
 - activations for one stream are serialized
 - stale ambient preconditions cancel before model/tool work
 """
+
 from __future__ import annotations
 
 import logging

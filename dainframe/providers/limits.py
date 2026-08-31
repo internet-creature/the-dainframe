@@ -6,6 +6,7 @@ accidentally create a new "global" semaphore per object. a provider
 constructed without a limiter gets a private one — correct for single-provider
 apps, and explicit sharing is one argument away.
 """
+
 from __future__ import annotations
 
 import asyncio

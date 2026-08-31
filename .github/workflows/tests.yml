@@ -1,0 +1,71 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # the declared floor (pyproject requires-python >=3.10) and the
+        # deploy interpreter: a 3.11+ feature must not merge unnoticed
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: install poetry
+        run: pipx install poetry
+
+      - name: install
+        run: poetry install --all-extras
+
+      - name: black
+        run: poetry run black --check dainframe tests
+
+      - name: pytest
+        run: poetry run pytest
+
+  # the seam guarded in BOTH directions (chordial OPERATIONS.md "the seam"):
+  # chordial's own CI tests its changes against dainframe main; this job
+  # tests dainframe changes against chordial main BEFORE they merge, so a
+  # breaking upstream change can't land green having never met its consumer
+  downstream:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: the-dainframe
+
+      - uses: actions/checkout@v4
+        with:
+          repository: internet-creature/chordial-mvp
+          ref: main
+          path: chordial-mvp
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: install poetry
+        run: pipx install poetry
+
+      - name: relock against this dainframe
+        working-directory: chordial-mvp
+        # chordial's lockfile records whatever dainframe version its main
+        # was locked against; this ref may declare a newer one
+        run: poetry lock
+
+      - name: install
+        working-directory: chordial-mvp
+        run: poetry install
+
+      - name: pytest
+        working-directory: chordial-mvp
+        run: poetry run pytest

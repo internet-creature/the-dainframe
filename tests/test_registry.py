@@ -19,7 +19,9 @@ def _tool(name, *, terminal=False, record_event=True):
         return f"{name} ran for {context.stream_id} as {context.actor}"
 
     return Tool(
-        definition=ToolDef(name=name, description=name, input_schema={"type": "object"}),
+        definition=ToolDef(
+            name=name, description=name, input_schema={"type": "object"}
+        ),
         handler=_handler,
         terminal=terminal,
         record_event=record_event,

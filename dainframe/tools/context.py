@@ -12,6 +12,7 @@ are the async-safe mechanism here: asyncio.gather copies the current context
 into each task at creation, so parallel tool calls in one turn all see the
 context bound before the gather. handlers that don't care simply never read it.
 """
+
 from __future__ import annotations
 
 import contextvars
@@ -24,9 +25,9 @@ from typing import Mapping, Optional
 class ToolContext:
     """the execution context of one agent run within one activation."""
 
-    stream_id: str        # opaque event-stream key (chordial: user_uuid)
-    activation_id: str    # one engine activation; ties actions to their turn
-    actor: str            # the named agent whose tool loop this is
+    stream_id: str  # opaque event-stream key (chordial: user_uuid)
+    activation_id: str  # one engine activation; ties actions to their turn
+    actor: str  # the named agent whose tool loop this is
     metadata: Mapping[str, object] = field(default_factory=dict)
 
 
