@@ -33,8 +33,10 @@ class ToolCall:
     `input` carries only the fields the model chose to set: absence means
     absence, never a null or placeholder standing in for it. a provider
     whose wire format forces the model to name every field (openai strict
-    mode) strips the resulting nulls before building the call, so handlers
-    read one shape regardless of backend."""
+    mode) prunes the nulls it introduced on the schema's optional fields
+    before building the call, so handlers read one shape regardless of
+    backend. a null on a field the schema itself requires and allows to be
+    null is a value, and survives on every provider."""
 
     id: str  # provider-assigned id; used to correlate the result
     name: str

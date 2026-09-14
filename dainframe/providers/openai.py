@@ -39,12 +39,16 @@ class OpenAIProvider(BaseAIProvider):
     `null` for a field it isn't setting, instead of guessing a placeholder
     ("", 0, the first enum value) - which is what a padded call looks like
     on the wire and what a handler would then apply as a real value. the
-    nulls are stripped from the parsed arguments before the ToolCall is
+    nulls strict mode introduced - on fields the source schema left
+    optional - are pruned from the parsed arguments before the ToolCall is
     built, so the neutral contract holds: `ToolCall.input` carries only the
-    fields the model chose to set, whichever provider produced it. the
-    anthropic side already meets that contract natively and is untouched.
-    `strict_tools=False` sends the ToolDef schema verbatim (the escape hatch
-    for a consumer whose schema uses a keyword strict mode rejects).
+    fields the model chose to set, whichever provider produced it. a null
+    on a field the source schema required (and so declared nullable itself)
+    is the model's explicit value and survives, as it does on the anthropic
+    side, which already meets the contract natively and is untouched.
+    `strict_tools=False` sends the ToolDef schema verbatim and the parsed
+    arguments verbatim (the escape hatch for a consumer whose schema uses a
+    keyword strict mode rejects).
     """
 
     def __init__(
@@ -89,7 +93,15 @@ class OpenAIProvider(BaseAIProvider):
         except APIError as e:
             raise ProviderError(str(e), retryable=True) from e
 
-        return self._normalize(response)
+        return self._normalize(response, self._source_schemas(request))
+
+    def _source_schemas(self, request: AIRequest) -> dict[str, dict]:
+        """tool name -> the ToolDef schema as the consumer wrote it, for
+        pruning the nulls strict mode introduced. empty when strict is off
+        (nothing was introduced, so nothing is pruned)."""
+        if not self.strict_tools:
+            return {}
+        return {t.name: t.input_schema for t in request.tools}
 
     # --- rendering ---------------------------------------------------------
 
@@ -135,7 +147,8 @@ class OpenAIProvider(BaseAIProvider):
 
     # --- normalization -----------------------------------------------------
 
-    def _normalize(self, response) -> AIResponse:
+    def _normalize(self, response, source_schemas=None) -> AIResponse:
+        source_schemas = source_schemas or {}
         text_parts = []
         tool_calls = []
         echo_blocks = []  # function_call items to re-send on continuation
@@ -154,12 +167,14 @@ class OpenAIProvider(BaseAIProvider):
                     parsed_args = json.loads(raw_args)
                 except json.JSONDecodeError:
                     parsed_args = {}
-                # strict mode makes the model say null for every field it
-                # isn't setting; the neutral ToolCall carries absence as
-                # absence. the raw arguments are echoed back verbatim below.
-                tool_calls.append(
-                    ToolCall(id=call_id, name=name, input=without_nulls(parsed_args))
-                )
+                # strict mode makes the model say null for every optional
+                # field it isn't setting; the neutral ToolCall carries absence
+                # as absence. the raw arguments are echoed back verbatim below.
+                if name in source_schemas:
+                    parsed_args = prune_introduced_nulls(
+                        parsed_args, source_schemas[name]
+                    )
+                tool_calls.append(ToolCall(id=call_id, name=name, input=parsed_args))
                 echo_blocks.append(
                     {
                         "type": "function_call",
@@ -221,7 +236,8 @@ def strict_schema(schema: dict) -> dict:
     properties listed in `required`, and `additionalProperties: false`. a
     property the source schema left optional becomes nullable (its type
     gains "null"; an enum gains None) so the model can still leave it
-    alone - by saying null, which `without_nulls` erases on the way back.
+    alone - by saying null, which `prune_introduced_nulls` erases on the
+    way back.
     the source schema is never mutated (ToolDefs are shared, and the
     anthropic provider sends them verbatim). the output is deterministic,
     so the rendered tool bytes are stable across requests (openai caches
@@ -279,11 +295,26 @@ def _nullable(schema: dict) -> dict:
     return out
 
 
-def without_nulls(value):
-    """the same JSON value with every null-valued object key removed, at
-    every depth. list elements are kept (null there is positional)."""
+def prune_introduced_nulls(value, schema):
+    """the inverse of `strict_schema`, applied to the model's arguments: a
+    null on a field the SOURCE schema left optional was introduced by strict
+    mode (the only way the model could leave that field alone) and is
+    erased; a null on a field the source schema required is the model's
+    explicit value and stays. recurses through nested objects and array
+    items alongside the schema; a value the schema doesn't describe is kept
+    as it came. list elements are never dropped (null there is positional).
+    """
+    if not isinstance(schema, dict):
+        return value
     if isinstance(value, dict):
-        return {k: without_nulls(v) for k, v in value.items() if v is not None}
+        props = schema.get("properties") or {}
+        required = set(schema.get("required") or ())
+        return {
+            k: prune_introduced_nulls(v, props.get(k))
+            for k, v in value.items()
+            if v is not None or k in required
+        }
     if isinstance(value, list):
-        return [without_nulls(v) for v in value]
+        items = schema.get("items")
+        return [prune_introduced_nulls(v, items) for v in value]
     return value

@@ -60,7 +60,7 @@ def test_tools_included_when_present():
 
 from types import SimpleNamespace
 
-from dainframe.providers.openai import strict_schema, without_nulls
+from dainframe.providers.openai import prune_introduced_nulls, strict_schema
 
 
 SCHEMA = {
@@ -154,7 +154,7 @@ def test_strict_tools_off_sends_the_schema_verbatim():
     assert rendered["parameters"] is SCHEMA
 
 
-def test_without_nulls_erases_absent_fields_at_every_depth():
+def test_pruning_erases_only_the_nulls_strict_mode_introduced():
     padded = {
         "task": "Pomodoro 2",
         "status": "deprioritized",
@@ -162,14 +162,44 @@ def test_without_nulls_erases_absent_fields_at_every_depth():
         "thing": {"task_id": 4, "label": None},
         "proposals": [{"line": "a", "why": None}],
         "tags": [None, "x"],
+        "unknown": None,
     }
-    assert without_nulls(padded) == {
+    assert prune_introduced_nulls(padded, SCHEMA) == {
         "task": "Pomodoro 2",
         "status": "deprioritized",
         "thing": {"task_id": 4},
         "proposals": [{"line": "a"}],
         "tags": [None, "x"],
     }
+
+
+NULLABLE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "value": {"type": ["string", "null"]},
+        "note": {"type": "string"},
+        "inner": {
+            "type": "object",
+            "properties": {"reset": {"type": ["boolean", "null"]}},
+            "required": ["reset"],
+        },
+    },
+    "required": ["value", "inner"],
+}
+
+
+def test_pruning_keeps_an_explicit_null_on_a_required_nullable_field():
+    # the source schema asked for it and allowed null: that null is a value,
+    # the same thing the anthropic provider hands through
+    args = {"value": None, "note": None, "inner": {"reset": None}}
+    assert prune_introduced_nulls(args, NULLABLE_SCHEMA) == {
+        "value": None,
+        "inner": {"reset": None},
+    }
+    # and strict rendering leaves those declarations alone
+    props = strict_schema(NULLABLE_SCHEMA)["properties"]
+    assert props["value"]["type"] == ["string", "null"]
+    assert props["note"]["type"] == ["string", "null"]
 
 
 def _response(arguments: str):
@@ -179,10 +209,28 @@ def _response(arguments: str):
     return SimpleNamespace(output=[call], usage=None)
 
 
-def test_normalize_strips_nulls_but_echoes_raw_arguments():
+def test_create_message_path_prunes_by_the_request_schemas_and_echoes_raw():
     raw = '{"task": "Pomodoro 2", "status": "deprioritized", "project": null}'
-    result = _provider()._normalize(_response(raw))
+    provider = _provider()
+    tools = [ToolDef(name="update_task", description="d", input_schema=SCHEMA)]
+    schemas = provider._source_schemas(_request(tools=tools))
+    result = provider._normalize(_response(raw), schemas)
     [call] = result.tool_calls
     assert call.input == {"task": "Pomodoro 2", "status": "deprioritized"}
     # the continuation re-sends what the model actually said
     assert result.assistant_turn.provider_blocks[0]["arguments"] == raw
+
+
+def test_strict_off_keeps_every_null_verbatim():
+    provider = OpenAIProvider(model="gpt-5.6-terra", api_key="x", strict_tools=False)
+    tools = [ToolDef(name="update_task", description="d", input_schema=SCHEMA)]
+    assert provider._source_schemas(_request(tools=tools)) == {}
+    raw = '{"task": "Pomodoro 2", "project": null}'
+    [call] = provider._normalize(_response(raw), {}).tool_calls
+    assert call.input == {"task": "Pomodoro 2", "project": None}
+
+
+def test_a_tool_the_request_did_not_declare_is_not_pruned():
+    raw = '{"task": "Pomodoro 2", "project": null}'
+    [call] = _provider()._normalize(_response(raw), {"other": SCHEMA}).tool_calls
+    assert call.input == {"task": "Pomodoro 2", "project": None}
