@@ -31,6 +31,24 @@ class OpenAIProvider(BaseAIProvider):
     (validating levels per route is the resolver's job). effort is only
     sent when the request supplies it - non-reasoning models must be
     paired with effort=None requests, same as the anthropic utility tier.
+
+    tools are rendered in STRICT mode by default (`strict_tools=True`): the
+    neutral ToolDef schema is rewritten into openai's strict form (every
+    property required, the optional ones nullable, no additional
+    properties) so the model is grammar-constrained to the schema and says
+    `null` for a field it isn't setting, instead of guessing a placeholder
+    ("", 0, the first enum value) - which is what a padded call looks like
+    on the wire and what a handler would then apply as a real value. the
+    nulls strict mode introduced - on fields the source schema left
+    optional - are pruned from the parsed arguments before the ToolCall is
+    built, so the neutral contract holds: `ToolCall.input` carries only the
+    fields the model chose to set, whichever provider produced it. a null
+    on a field the source schema required (and so declared nullable itself)
+    is the model's explicit value and survives, as it does on the anthropic
+    side, which already meets the contract natively and is untouched.
+    `strict_tools=False` sends the ToolDef schema verbatim and the parsed
+    arguments verbatim (the escape hatch for a consumer whose schema uses a
+    keyword strict mode rejects).
     """
 
     def __init__(
@@ -38,8 +56,10 @@ class OpenAIProvider(BaseAIProvider):
         model: str,
         api_key: Optional[str] = None,
         limiter: Optional[ConcurrencyLimiter] = None,
+        strict_tools: bool = True,
     ):
         self.model = model
+        self.strict_tools = strict_tools
         # api_key=None falls back to the sdk's OPENAI_API_KEY env lookup
         self.client = AsyncOpenAI(api_key=api_key)
         # inject ONE limiter across providers that should share the in-flight
@@ -73,20 +93,35 @@ class OpenAIProvider(BaseAIProvider):
         except APIError as e:
             raise ProviderError(str(e), retryable=True) from e
 
-        return self._normalize(response)
+        return self._normalize(response, self._source_schemas(request))
+
+    def _source_schemas(self, request: AIRequest) -> dict[str, dict]:
+        """tool name -> the ToolDef schema as the consumer wrote it, for
+        pruning the nulls strict mode introduced. empty when strict is off
+        (nothing was introduced, so nothing is pruned)."""
+        if not self.strict_tools:
+            return {}
+        return {t.name: t.input_schema for t in request.tools}
 
     # --- rendering ---------------------------------------------------------
 
     def _render_tools(self, tools) -> list[dict]:
-        return [
-            {
+        rendered = []
+        for t in tools:
+            item = {
                 "type": "function",
                 "name": t.name,
                 "description": t.description,
-                "parameters": t.input_schema,
+                "parameters": (
+                    strict_schema(t.input_schema)
+                    if self.strict_tools
+                    else t.input_schema
+                ),
             }
-            for t in tools
-        ]
+            if self.strict_tools:
+                item["strict"] = True
+            rendered.append(item)
+        return rendered
 
     def _render_input(self, messages: list[ChatTurn]) -> list[dict]:
         items: list[dict] = []
@@ -112,7 +147,8 @@ class OpenAIProvider(BaseAIProvider):
 
     # --- normalization -----------------------------------------------------
 
-    def _normalize(self, response) -> AIResponse:
+    def _normalize(self, response, source_schemas=None) -> AIResponse:
+        source_schemas = source_schemas or {}
         text_parts = []
         tool_calls = []
         echo_blocks = []  # function_call items to re-send on continuation
@@ -131,6 +167,13 @@ class OpenAIProvider(BaseAIProvider):
                     parsed_args = json.loads(raw_args)
                 except json.JSONDecodeError:
                     parsed_args = {}
+                # strict mode makes the model say null for every optional
+                # field it isn't setting; the neutral ToolCall carries absence
+                # as absence. the raw arguments are echoed back verbatim below.
+                if name in source_schemas:
+                    parsed_args = prune_introduced_nulls(
+                        parsed_args, source_schemas[name]
+                    )
                 tool_calls.append(ToolCall(id=call_id, name=name, input=parsed_args))
                 echo_blocks.append(
                     {
@@ -181,3 +224,97 @@ class OpenAIProvider(BaseAIProvider):
         except Exception as e:
             logger.warning("openai provider configured but unavailable: %s", e)
             return False
+
+
+# --- strict-mode schema rendering ----------------------------------------
+
+
+def strict_schema(schema: dict) -> dict:
+    """a copy of a JSON Schema in openai strict form.
+
+    strict mode's two rules, applied to every object at every depth: all
+    properties listed in `required`, and `additionalProperties: false`. a
+    property the source schema left optional becomes nullable (its type
+    gains "null"; an enum gains None) so the model can still leave it
+    alone - by saying null, which `prune_introduced_nulls` erases on the
+    way back.
+    the source schema is never mutated (ToolDefs are shared, and the
+    anthropic provider sends them verbatim). the output is deterministic,
+    so the rendered tool bytes are stable across requests (openai caches
+    the processed schema per distinct shape).
+    """
+    if not isinstance(schema, dict):
+        return schema
+    out = dict(schema)
+    props = schema.get("properties")
+    is_object = schema.get("type") == "object" or props is not None
+    if is_object:
+        props = props or {}
+        required = set(schema.get("required") or ())
+        out["properties"] = {
+            name: (
+                strict_schema(sub)
+                if name in required
+                else _nullable(strict_schema(sub))
+            )
+            for name, sub in props.items()
+        }
+        out["required"] = list(props.keys())
+        out["additionalProperties"] = False
+    if "items" in schema:
+        out["items"] = strict_schema(schema["items"])
+    for combinator in ("anyOf", "oneOf", "allOf"):
+        if combinator in schema:
+            out[combinator] = [strict_schema(s) for s in schema[combinator]]
+    if "$defs" in schema:
+        out["$defs"] = {k: strict_schema(v) for k, v in schema["$defs"].items()}
+    return out
+
+
+def _nullable(schema: dict) -> dict:
+    """the same schema, also accepting null."""
+    if not isinstance(schema, dict):
+        return schema
+    out = dict(schema)
+    t = schema.get("type")
+    if t is None:
+        # no bare type to widen (a combinator, or an untyped schema): wrap
+        if "anyOf" in schema:
+            branches = list(schema["anyOf"])
+            if not any(b.get("type") == "null" for b in branches):
+                branches.append({"type": "null"})
+            out["anyOf"] = branches
+            return out
+        return {"anyOf": [out, {"type": "null"}]}
+    types = list(t) if isinstance(t, list) else [t]
+    if "null" not in types:
+        types.append("null")
+    out["type"] = types
+    if "enum" in schema and None not in schema["enum"]:
+        out["enum"] = list(schema["enum"]) + [None]
+    return out
+
+
+def prune_introduced_nulls(value, schema):
+    """the inverse of `strict_schema`, applied to the model's arguments: a
+    null on a field the SOURCE schema left optional was introduced by strict
+    mode (the only way the model could leave that field alone) and is
+    erased; a null on a field the source schema required is the model's
+    explicit value and stays. recurses through nested objects and array
+    items alongside the schema; a value the schema doesn't describe is kept
+    as it came. list elements are never dropped (null there is positional).
+    """
+    if not isinstance(schema, dict):
+        return value
+    if isinstance(value, dict):
+        props = schema.get("properties") or {}
+        required = set(schema.get("required") or ())
+        return {
+            k: prune_introduced_nulls(v, props.get(k))
+            for k, v in value.items()
+            if v is not None or k in required
+        }
+    if isinstance(value, list):
+        items = schema.get("items")
+        return [prune_introduced_nulls(v, items) for v in value]
+    return value
