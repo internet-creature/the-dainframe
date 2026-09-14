@@ -99,7 +99,8 @@ dainframe/
                      typed errors (ProviderError/RateLimited/Unavailable)
     base.py          BaseAIProvider
     anthropic.py     AnthropicProvider (all config via constructor — no Config import)
-    openai.py        OpenAIProvider
+    openai.py        OpenAIProvider (tools rendered in strict mode: optionals
+                     nullable, nulls stripped so ToolCall.input = fields set)
   tools/
     registry.py      Tool (terminal / record_event), ToolRegistry, view()
     context.py       ToolContext: stream/activation/actor/metadata

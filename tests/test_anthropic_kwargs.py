@@ -49,3 +49,19 @@ def test_tools_included_when_present():
     tools = [ToolDef(name="t", description="d", input_schema={"type": "object"})]
     kwargs = provider._build_kwargs(_request(tools=tools))
     assert kwargs["tools"][0]["name"] == "t"
+
+
+def test_tool_schema_passes_through_verbatim():
+    # the openai side rewrites schemas into strict form; claude models
+    # honor optional fields natively, so this provider sends the ToolDef
+    # bytes untouched (and never sees the strict keys)
+    provider = AnthropicProvider(model="claude-sonnet-5", api_key="x", thinking=True)
+    schema = {
+        "type": "object",
+        "properties": {"task": {"type": "string"}, "status": {"type": "string"}},
+        "required": ["task"],
+    }
+    tools = [ToolDef(name="t", description="d", input_schema=schema)]
+    rendered = provider._build_kwargs(_request(tools=tools))["tools"][0]
+    assert rendered["input_schema"] is schema
+    assert "strict" not in rendered
